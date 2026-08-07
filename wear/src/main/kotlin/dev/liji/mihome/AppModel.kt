@@ -19,6 +19,7 @@ import dev.liji.mihome.core.clearSession
 import dev.liji.mihome.core.loadSession
 import dev.liji.mihome.core.saveSession
 import dev.liji.mihome.core.toControls
+import dev.liji.mihome.core.urnCategory
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -52,6 +53,8 @@ data class Dev(
     val did: String,
     val name: String,
     val online: Boolean,
+    /** spec urn 的类别段（light / air-conditioner …），UI 靠它取身份色和图标。 */
+    val category: String? = null,
     val controls: List<Control> = emptyList(),
     val values: Map<PropKey, DevValue> = emptyMap(),
     val busy: Boolean = false,
@@ -213,7 +216,13 @@ class AppModel(private val app: Context) {
                         .onFailure { Flog.w("spec 取用失败 ${info.did}: ${it.message}") }
                         .getOrNull()
                 }.orEmpty()
-                Dev(did = info.did, name = info.name, online = info.online, controls = controls)
+                Dev(
+                    did = info.did,
+                    name = info.name,
+                    online = info.online,
+                    category = info.specType?.urnCategory(),
+                    controls = controls,
+                )
             }
             .sortedBy { pinned.indexOf(it.did) }
 
@@ -226,7 +235,7 @@ class AppModel(private val app: Context) {
         TileState.save(
             app,
             devs.mapNotNull { d ->
-                d.power?.let { TileState.Item(d.did, d.name, d.on, it.siid, it.piid) }
+                d.power?.let { TileState.Item(d.did, d.name, d.on, it.siid, it.piid, d.category) }
             },
         )
         MiTileService.requestUpdate(app)

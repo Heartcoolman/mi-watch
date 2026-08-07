@@ -16,13 +16,21 @@ object TileState {
 
     private const val KEY = "tile_devices"
 
-    data class Item(val did: String, val name: String, val on: Boolean?, val siid: Int, val piid: Int)
+    data class Item(
+        val did: String,
+        val name: String,
+        val on: Boolean?,
+        val siid: Int,
+        val piid: Int,
+        /** spec 类别，Tile 靠它取和主界面一致的身份色。 */
+        val category: String? = null,
+    )
 
     fun save(ctx: Context, items: List<Item>) {
         AndroidStore(ctx).set(
             KEY,
             items.joinToString(";") {
-                "${it.did}|${it.name}|${it.on?.let { b -> if (b) "1" else "0" } ?: "?"}|${it.siid}|${it.piid}"
+                "${it.did}|${it.name}|${it.on?.let { b -> if (b) "1" else "0" } ?: "?"}|${it.siid}|${it.piid}|${it.category.orEmpty()}"
             },
         )
     }
@@ -30,13 +38,15 @@ object TileState {
     fun load(ctx: Context): List<Item> =
         AndroidStore(ctx).get(KEY)?.split(";").orEmpty().mapNotNull { row ->
             val f = row.split("|")
-            if (f.size != 5) return@mapNotNull null
+            // 宽松判长度：升级后旧格式（5 段、无 category）仍要能读，否则 Tile 会空到下次刷新
+            if (f.size < 5) return@mapNotNull null
             Item(
                 did = f[0],
                 name = f[1],
                 on = when (f[2]) { "1" -> true; "0" -> false; else -> null },
                 siid = f[3].toIntOrNull() ?: return@mapNotNull null,
                 piid = f[4].toIntOrNull() ?: return@mapNotNull null,
+                category = f.getOrNull(5)?.ifEmpty { null },
             )
         }
 

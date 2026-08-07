@@ -1,6 +1,8 @@
 package dev.liji.mihome
 
 import android.content.ComponentName
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.toArgb
 import androidx.wear.protolayout.ActionBuilders
 import androidx.wear.protolayout.DeviceParametersBuilders
 import androidx.wear.protolayout.LayoutElementBuilders
@@ -11,7 +13,6 @@ import androidx.wear.protolayout.material.Chip
 import androidx.wear.protolayout.material.ChipColors
 import androidx.wear.protolayout.material.Text
 import androidx.wear.protolayout.material.Typography
-import androidx.wear.protolayout.material.layouts.PrimaryLayout
 import androidx.wear.tiles.RequestBuilders
 import androidx.wear.tiles.TileBuilders
 import androidx.wear.tiles.TileService
@@ -65,7 +66,7 @@ class MiTileService : TileService() {
             column.addContent(
                 Text.Builder(this, "先打开米家 App 登录")
                     .setTypography(Typography.TYPOGRAPHY_CAPTION1)
-                    .setColor(androidx.wear.protolayout.ColorBuilders.argb(0xFFBBBBBB.toInt()))
+                    .setColor(androidx.wear.protolayout.ColorBuilders.argb(Hyper.Muted.toArgb()))
                     .build(),
             )
         } else {
@@ -120,13 +121,14 @@ class MiTileService : TileService() {
             )
             .build()
 
-        // 开着＝主色高亮，关着/未知＝次级色。
+        // 开着＝设备身份色，关着/未知＝深灰，和主界面的卡片同一套语言。
+        // protolayout 的 Chip 不支持渐变，取渐变两端的中间色作近似。
         // 不加副标题：三个 chip 各带一行副标题在 480×480 上放不下，第三个会被切掉。
-        // 状态交给颜色表达——这也是 Wear 自带卡片的做法，顺带让点击目标更大。
         val colors = if (item.on == true) {
-            ChipColors.primaryChipColors(TILE_THEME)
+            val acc = accentOf(item.category)
+            ChipColors(lerp(acc.light, acc.deep, 0.45f).toArgb(), Hyper.OnAccent.toArgb())
         } else {
-            ChipColors.secondaryChipColors(TILE_THEME)
+            ChipColors(Hyper.Surface.toArgb(), Hyper.OnSurface.toArgb())
         }
 
         return Chip.Builder(this, click, device)
@@ -156,13 +158,6 @@ class MiTileService : TileService() {
 
     companion object {
         private const val RESOURCES_VERSION = "1"
-        private val TILE_THEME = androidx.wear.protolayout.material.Colors(
-            0xFF4C8DFF.toInt(), // primary
-            0xFF000000.toInt(), // onPrimary
-            0xFF2A2E35.toInt(), // surface
-            0xFFE6E6E6.toInt(), // onSurface
-        )
-
         /** 状态变了就让系统重绘 Tile。 */
         fun requestUpdate(ctx: android.content.Context) {
             runCatching {
