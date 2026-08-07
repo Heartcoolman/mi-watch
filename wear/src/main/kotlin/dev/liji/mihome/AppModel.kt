@@ -397,12 +397,17 @@ class AppModel(private val app: Context) {
                         }
                     }
                     check(ok) { "写入被拒绝" }
-                    delay(800)
-                    // 回读确认：设备可能拒绝或钳制到别的值（比如空调温度超范围）
-                    readProps(listOf(dev)) { listOf(c) }.first().valueOf(c)
+                    // 回读一到两次。快设备一次就确认，慢的再给一次机会。
+                    var seen: DevValue? = null
+                    for (wait in listOf(700L, 1500L)) {
+                        delay(wait)
+                        seen = readProps(listOf(dev)) { listOf(c) }.first().valueOf(c)
+                        if (matches(seen, target, c)) break
+                    }
+                    seen
                 }
             }.onSuccess { actual ->
-                val v = actual ?: target
+                val v = reconcile(actual, target, prev, c)
                 putValue(did, c, v, busy = false)
                 if (c == dev.power) {
                     TileState.put(app, did, v.bool)
@@ -457,6 +462,36 @@ class AppModel(private val app: Context) {
         store.set(KEY_FAV, next.joinToString(","))
         _state.value = _state.value.copy(favIds = next)
         syncTile(_state.value.devices)
+    }
+
+    /**
+     * 决定写入之后界面该显示什么。
+     *
+     * 回读的意义是「设备可能把值钳到别处」——空调设 33° 会被钳成 30°，不认这个就会显示错。
+     * 但**不能盲信回读**：`prop/get` 返回的是云端缓存的「上次上报值」，不是设备现状。
+     * 小米智能音箱 Pro 实测：写音量 code=0、喇叭立刻响应，而回读**整整 50 秒**才跟上。
+     * 原来的实现拿这个陈旧值覆盖乐观值，表现就是「调到 40% 过一下自己跳回 60%」。
+     *
+     * 三分支判据：
+     *  - 读到目标值 → 确认了，用它
+     *  - 读到的还是改之前的值 → 设备八成还没上报，保留乐观值，别把界面打回去
+     *  - 读到第三个值 → 设备真的改了主意（钳制），听它的
+     */
+    private fun reconcile(actual: DevValue?, target: DevValue, prev: DevValue?, c: Control.Prop): DevValue = when {
+        actual == null || !actual.ok -> target
+        matches(actual, target, c) -> actual
+        prev != null && matches(actual, prev, c) -> target
+        else -> actual
+    }
+
+    private fun matches(a: DevValue?, b: DevValue?, c: Control.Prop): Boolean {
+        if (a == null || b == null) return false
+        a.bool?.let { return it == b.bool }
+        val x = a.num ?: return false
+        val y = b.num ?: return false
+        // 目标值发出去前会经过 stepped()，所以比较的是钳过步进之后的数
+        val yy = if (c is Control.Range) c.stepped(y) else y
+        return kotlin.math.abs(x - yy) < 0.5
     }
 
     fun signOut() {
