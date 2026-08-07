@@ -46,6 +46,7 @@ fun main(args: Array<String>) {
             "spec" -> spec(rest)
             "controls-urn" -> controlsUrn(rest)
             "bundle" -> bundle(rest)
+            "audit" -> audit(rest)
             "list" -> list()
             "icons" -> icons(rest)
             "raw" -> raw(rest)
@@ -63,6 +64,37 @@ fun main(args: Array<String>) {
         kotlin.system.exitProcess(1)
     }
 }
+
+/** 覆盖率审计。见 MiAudit 里为什么开源必须先能测量。 */
+private fun audit(a: List<String>) {
+    val per = a.firstOrNull()?.toIntOrNull() ?: 3
+    val rows = MiAudit.run(File(System.getProperty("java.io.tmpdir"), "mihome-spec-audit"), per)
+    if (rows.isEmpty()) return
+
+    println("\n══ 总览（$${rows.size} 个型号）══")
+    val zero = rows.filter { it.quick == 0 }
+    println("  零常用控件      ${zero.size}  (${pct(zero.size, rows.size)})   ← 这些设备在表上是空卡片")
+    println("  有电源开关      ${rows.count { it.hasPower }}  (${pct(rows.count { it.hasPower }, rows.size)})")
+    println("  常用控件 >12    ${rows.count { it.quick > 12 }}  (${pct(rows.count { it.quick > 12 }, rows.size)})   ← 右列会长到没法用")
+    println("  常用中位数      ${rows.map { it.quick }.sorted()[rows.size / 2]}")
+
+    println("\n══ 零控件的品类 TOP20 ══")
+    zero.groupBy { it.category }.toList().sortedByDescending { it.second.size }.take(20)
+        .forEach { (cat, v) -> println("  %-32s %3d 个  例: %s".format(cat, v.size, v.first().model)) }
+
+    println("\n══ 控件最多的 10 个（右列爆炸风险）══")
+    rows.sortedByDescending { it.quick }.take(10)
+        .forEach { println("  %-32s quick=%-4d 可写=%-3d 读数=%-3d %s".format(it.category, it.quick, it.quickWritable, it.quickReadouts, it.model)) }
+
+    println("\n══ 按品类：无电源开关比例最高的 15 个（其中有可写控件的）══")
+    rows.filter { it.quickWritable > 0 }.groupBy { it.category }
+        .mapValues { (_, v) -> v.count { !it.hasPower } to v.size }
+        .filter { it.value.second >= 2 }
+        .toList().sortedByDescending { it.second.first.toDouble() / it.second.second }.take(15)
+        .forEach { (cat, p) -> println("  %-32s %d/%d 无电源".format(cat, p.first, p.second)) }
+}
+
+private fun pct(a: Int, b: Int) = "%.1f%%".format(a * 100.0 / b)
 
 /**
  * 把表上列表页会显示的内容原样在终端跑一遍。
@@ -148,6 +180,7 @@ private fun usage() = println(
       spec <urn>                     打印 MIoT spec 树（免登录）
       controls-urn <urn>             打印归约出的控件（免登录，调 toControls 用）
       bundle <outdir> <urn>...       把 spec 与中文翻译写进 assets，供表上首启即用
+      audit [每品类数量]              拿 miot-spec 全量语料检验归约规则的覆盖率
       list                           在 Mac 上跑一遍表上列表页会显示的内容
       icons <outdir> [model...]       抓米家原生设备图标进 assets（不传 model 就取全部设备）
       raw <path> [json]              原样打印端点响应（看类型化封装吃掉了哪些字段）
@@ -310,6 +343,7 @@ private fun controlsUrn(a: List<String>) {
             is Control.Range -> println("$tag 滑块   s${c.siid} p${c.piid}  ${c.label}  ${c.min}–${c.max} step ${c.step} ${c.unit.orEmpty()}")
             is Control.Choice -> println("$tag 选择   s${c.siid} p${c.piid}  ${c.label}  ${c.options.joinToString(" / ") { it.second }}")
             is Control.Readout -> println("$tag 只读   s${c.siid} p${c.piid}  ${c.label} ${c.unit.orEmpty()}")
+            is Control.Act -> println("$tag 动作   s${c.siid} a${c.aiid}  ${c.label}")
         }
     }
 }

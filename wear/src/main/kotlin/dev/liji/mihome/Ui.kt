@@ -377,7 +377,7 @@ private fun offlineNote(d: Dev): String? = when {
 private fun DetailScreen(dev: Dev, state: UiState, model: AppModel) {
     val acc = accentOf(dev.category)
     val hero = heroRange(dev)
-    var picking by remember { mutableStateOf<Control?>(null) }
+    var picking by remember { mutableStateOf<Control.Prop?>(null) }
     val faved = dev.did in state.favIds
 
     BackHandler { if (picking != null) picking = null else model.back() }
@@ -569,7 +569,7 @@ private fun SideColumn(
     hero: Control.Range?,
     faved: Boolean,
     model: AppModel,
-    onPick: (Control) -> Unit,
+    onPick: (Control.Prop) -> Unit,
 ) {
     val scroll = rememberScrollState()
     // 主开关已经并进滑块的点击，不再单列一项
@@ -603,6 +603,13 @@ private fun SideColumn(
                     )
                 }
 
+                // 无入参动作：点一下就发，没有状态可显示
+                is Control.Act -> Chip(
+                    label = shortLabel(c.label), value = "▸",
+                    accent = acc, active = false,
+                    onClick = { model.invoke(dev.did, c) },
+                )
+
                 is Control.Readout -> Unit // 见 readoutLine()
             }
         }
@@ -628,7 +635,7 @@ private fun FavChip(faved: Boolean, acc: Accent, onClick: () -> Unit) {
  * 比列表页那两个摘要值多。
  */
 @Composable
-private fun SensorDetail(dev: Dev, acc: Accent, faved: Boolean, model: AppModel, onPick: (Control) -> Unit) {
+private fun SensorDetail(dev: Dev, acc: Accent, faved: Boolean, model: AppModel, onPick: (Control.Prop) -> Unit) {
     val listState = rememberScalingLazyListState()
     ScalingLazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -662,7 +669,14 @@ private fun SensorDetail(dev: Dev, acc: Accent, faved: Boolean, model: AppModel,
                         modifier = Modifier.padding(horizontal = 26.dp).fillMaxWidth(),
                     )
                 }
-                else -> Pill(
+                is Control.Act -> Pill(
+                    text = "▸ ${shortLabel(c.label)}",
+                    accent = acc, filled = false,
+                    onClick = { model.invoke(dev.did, c) },
+                    modifier = Modifier.padding(horizontal = 26.dp).fillMaxWidth(),
+                )
+
+                is Control.Prop -> Pill(
                     text = shortLabel(c.label),
                     accent = acc, filled = false,
                     onClick = { onPick(c) },
@@ -768,7 +782,7 @@ private fun Chip(
 @Composable
 private fun PickerOverlay(
     dev: Dev,
-    c: Control,
+    c: Control.Prop,
     acc: Accent,
     onPick: (Int) -> Unit,
     onDismiss: () -> Unit,

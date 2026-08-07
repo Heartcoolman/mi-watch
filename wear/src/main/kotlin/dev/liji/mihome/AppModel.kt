@@ -81,9 +81,9 @@ data class Dev(
      * 只读量是传感器卡片的全部意义（「25.9° 45%」），电源是可控设备的全部意义，
      * 两者合起来一次 prop/get 就够渲染整个列表。
      */
-    val listProps: List<Control> get() = listOfNotNull(power) + readouts.take(2)
+    val listProps: List<Control.Prop> get() = listOfNotNull(power) + readouts.take(2)
 
-    fun valueOf(c: Control): DevValue? = values[c.siid to c.piid]
+    fun valueOf(c: Control.Prop): DevValue? = values[c.siid to c.piid]
 }
 
 data class UiState(
@@ -93,6 +93,8 @@ data class UiState(
     val favIds: List<String> = emptyList(),
     val error: String? = null,
     val busy: Boolean = false,
+    /** 首次启动拉 spec 时的进度文案；平时为 null。 */
+    val progress: String? = null,
 ) {
     val favorites: List<Dev> get() = favIds.mapNotNull { id -> devices.firstOrNull { it.did == id } }
 
@@ -106,8 +108,8 @@ data class UiState(
 
 class AppModel(private val app: Context) {
 
-    /** 首次启动时的收藏，之后以用户在详情页 ★ 的选择为准。 */
-    private val defaultFavorites = listOf("889297205", "899794381", "495582022")
+    /** 首屏收藏的容量。三张 52dp 卡片正好在 226dp 上居中排完，零滚动。 */
+    private val autoFavoriteCount = 3
 
     /** 房间表变化极少，一个进程生命周期内取一次就够——省掉每次刷新的一个蓝牙往返。 */
     private var roomMap: Map<String, String>? = null
@@ -241,13 +243,11 @@ class AppModel(private val app: Context) {
         val (uid, homeId) = homeIds()
         val rooms = roomMap ?: Flog.timed("gethome/rooms") { api.rooms() }.also { roomMap = it }
 
-        val devs = Flog.timed("device_list") { api.devices(uid, homeId) }
+        val infos = Flog.timed("device_list") { api.devices(uid, homeId) }
+        val controlsByType = prefetchControls(infos.mapNotNull { it.specType }.distinct())
+
+        val devs = infos
             .map { info ->
-                val controls = info.specType?.let { t ->
-                    runCatching { controlsOf(specs.spec(t)) }
-                        .onFailure { Flog.w("spec 取用失败 ${info.did}: ${it.message}") }
-                        .getOrNull()
-                }.orEmpty()
                 Dev(
                     did = info.did,
                     name = info.name,
@@ -255,15 +255,15 @@ class AppModel(private val app: Context) {
                     category = info.specType?.urnCategory(),
                     model = info.model,
                     room = rooms[info.did],
-                    controls = controls,
+                    controls = controlsByType[info.specType].orEmpty(),
                 )
             }
             // 有常用控件的排前面：连电量都读不到的设备（体脂秤）沉底
             .sortedWith(compareByDescending<Dev> { it.quick.isNotEmpty() }.thenBy { it.name })
 
-        // 一次批量请求拿全部设备的列表态。21 个设备约 50 个属性，仍是一个往返——
+        // 一次批量请求拿全部设备的列表态。二十来个设备约 50 个属性，仍是一个往返——
         // 蓝牙链路上少一个往返就是几百毫秒，这是整个列表页能秒开的原因。
-        return readProps(devs) { it.listProps }.also { syncTile(it) }
+        return readProps(devs) { it.listProps }.also { seedFavorites(it); syncTile(it) }
     }
 
     /** 把最后已知状态写进缓存，Tile 靠它瞬间出图（它不能发网络请求）。 */
@@ -286,7 +286,7 @@ class AppModel(private val app: Context) {
             runCatching {
                 withContext(Dispatchers.IO) {
                     val dev = _state.value.devices.firstOrNull { it.did == did } ?: error("设备不存在")
-                    readProps(listOf(dev)) { d -> d.quick }.first()
+                    readProps(listOf(dev)) { d -> d.quick.filterIsInstance<Control.Prop>() }.first()
                 }
             }.onSuccess { d ->
                 putDev(d)
@@ -299,7 +299,7 @@ class AppModel(private val app: Context) {
     }
 
     /** 一次 prop/get 读多个设备的多个属性——批量是蓝牙链路上最划算的优化。 */
-    private fun readProps(devs: List<Dev>, pick: (Dev) -> List<Control>): List<Dev> {
+    private fun readProps(devs: List<Dev>, pick: (Dev) -> List<Control.Prop>): List<Dev> {
         val refs = devs.flatMap { d -> pick(d).map { PropRef(d.did, it.siid, it.piid) } }
         if (refs.isEmpty()) return devs
         val got = Flog.timed("prop/get x${refs.size}") { api.propGet(refs) }
@@ -323,7 +323,26 @@ class AppModel(private val app: Context) {
      * 写一个属性。乐观更新：先本地翻转再发请求，失败回滚。
      * 蓝牙下一次写要 200–600ms，没有即时反馈会让人以为没按上。
      */
-    fun write(did: String, c: Control, target: DevValue) {
+    /**
+     * 触发一个无入参动作。动作是即发即忘：没有可回读的值，也就没有乐观更新和回滚。
+     * 红外空调、投影仪遥控、扫地机启停走的都是这条路。
+     */
+    fun invoke(did: String, c: Control.Act) {
+        val dev = _state.value.devices.firstOrNull { it.did == did } ?: return
+        scope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    val ok = Flog.timed("action $did ${c.siid}.${c.aiid}") { api.invokeAction(did, c.siid, c.aiid) }
+                    check(ok) { "动作被拒绝" }
+                }
+            }.onFailure { e ->
+                Flog.e("动作失败 $did ${c.siid}.${c.aiid}", e)
+                _state.value = _state.value.copy(error = "${dev.name}：${friendly(e)}")
+            }
+        }
+    }
+
+    fun write(did: String, c: Control.Prop, target: DevValue) {
         val dev = _state.value.devices.firstOrNull { it.did == did } ?: return
         val prev = dev.valueOf(c)
         putValue(did, c, target, busy = true)
@@ -363,7 +382,22 @@ class AppModel(private val app: Context) {
     }
 
     private fun loadFavorites(): List<String> =
-        store.get(KEY_FAV)?.split(",")?.filter { it.isNotBlank() } ?: defaultFavorites
+        store.get(KEY_FAV)?.split(",")?.filter { it.isNotBlank() }.orEmpty()
+
+    /**
+     * 首次启动时替用户挑几个收藏：取前几个能开关的设备。
+     *
+     * 不能硬编码 did——那是某一户人家的设备号，换个账号就全是空的。
+     * 挑「能开关的」是因为收藏区的卡片点一下就是开关，只读传感器放进去没有意义。
+     * 挑完就落盘，之后完全以用户在详情页 ★ 的选择为准。
+     */
+    private fun seedFavorites(devs: List<Dev>) {
+        if (store.get(KEY_FAV) != null) return
+        val seed = devs.filter { it.power != null }.take(autoFavoriteCount).map { it.did }
+        store.set(KEY_FAV, seed.joinToString(","))
+        _state.value = _state.value.copy(favIds = seed)
+        Flog.i("首次启动，自动收藏 ${seed.size} 个可开关设备")
+    }
 
     /** 加入/移出收藏。收藏只存在表上，不回写米家。 */
     fun toggleFavorite(did: String) {
@@ -392,7 +426,7 @@ class AppModel(private val app: Context) {
         )
     }
 
-    private fun putValue(did: String, c: Control, v: DevValue?, busy: Boolean) {
+    private fun putValue(did: String, c: Control.Prop, v: DevValue?, busy: Boolean) {
         _state.value = _state.value.copy(
             devices = _state.value.devices.map { d ->
                 if (d.did != did) d
@@ -423,6 +457,42 @@ class AppModel(private val app: Context) {
 
     private fun controlsOf(spec: SpecInstance): List<Control> =
         spec.toControls(specs.translations(spec.type))
+
+    /**
+     * 并发预取 spec 并归约成控件。
+     *
+     * 打包进 assets 的 spec 只对「构建这个包的人自己家」有效。别人装上以后，一屋子设备的
+     * spec 全要现拉，每个型号还要两次请求（spec + 中文翻译）。串行拉在蓝牙链路上是
+     * 20–40 秒的白屏——这是开源版和自用版最大的体感差别。
+     *
+     * 并发度只给 3：蓝牙代理是条窄管子，开太多反而互相拖慢（这也是最初计划里
+     * 「不要对着蓝牙代理并发十几个请求」那条的由来）。命中缓存的型号根本不发请求，
+     * 所以这个代价只在首次启动、以及新增设备时付一次。
+     */
+    private fun prefetchControls(types: List<String>): Map<String, List<Control>> {
+        val missing = types.count { !specs.isCached(it) }
+        if (missing > 0) Flog.i("需要拉取 $missing 个型号的 spec")
+        val done = java.util.concurrent.atomic.AtomicInteger()
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(3)
+        val out = java.util.concurrent.ConcurrentHashMap<String, List<Control>>()
+        try {
+            types.map { t ->
+                pool.submit {
+                    runCatching { out[t] = controlsOf(specs.spec(t)) }
+                        .onFailure { Flog.w("spec 取用失败 $t: ${it.message}") }
+                    if (missing > 0) {
+                        _state.value = _state.value.copy(
+                            progress = "读取设备型号 ${done.incrementAndGet()}/${types.size}",
+                        )
+                    }
+                }
+            }.forEach { it.get() }
+        } finally {
+            pool.shutdown()
+            _state.value = _state.value.copy(progress = null)
+        }
+        return out
+    }
 
     /** UnknownHostException 在这台表上最常见的成因是深度 Doze 掐了网络，直接说人话。 */
     private fun friendly(e: Throwable): String = when {

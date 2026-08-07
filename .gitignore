@@ -6,3 +6,8 @@ build/
 .idea/
 *.iml
 .mihome-core.properties
+
+# 设备 spec 与图标：内容取决于你自己家有哪些设备，不该进版本库。
+# 构建前用 ./mi bundle / ./mi icons 生成（可选，缺了会走运行时抓取和自绘图形）。
+wear/src/main/assets/spec/
+wear/src/main/assets/icon/

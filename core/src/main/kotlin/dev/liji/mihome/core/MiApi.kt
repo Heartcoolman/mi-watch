@@ -215,6 +215,10 @@ class MiApi(private val store: Store, private val auth: MiAuth, var verbose: Boo
             ),
         ).code() == 0
 
+    /** 触发一个无入参动作。返回是否成功——:wear 不接触 JSON，所以这里就把信封拆掉。 */
+    fun invokeAction(did: String, siid: Int, aiid: Int): Boolean =
+        action(did, siid, aiid).code() == 0
+
     fun propSet(items: List<Pair<PropRef, JsonElement>>): JsonObject = post(
         "miotspec/prop/set",
         bodyOf {

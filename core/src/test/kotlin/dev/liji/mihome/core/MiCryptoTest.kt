@@ -13,7 +13,7 @@ class MiCryptoTest {
 
     private val ssecurity = "MDEyMzQ1Njc4OWFiY2RlZg=="
     private val nonce = "aB3xY9zQ1mN7pL5k"
-    private val data = """{"params":[{"did":"889297205","siid":2,"piid":1}]}"""
+    private val data = """{"params":[{"did":"123456789","siid":2,"piid":1}]}"""
 
     @Test
     fun signedNonceMatchesPython() {
@@ -27,7 +27,7 @@ class MiCryptoTest {
     fun signatureMatchesPython() {
         val sn = MiCrypto.signedNonce(ssecurity, nonce)
         assertEquals(
-            "r6GTABgA1CFEgKhf9VxhvuXwWEo+paXmAw1yVgUZalI=",
+            "kgI5fPxjNUgyITsM42VfDHGFhft76o1ZbVNayp26OCI=",
             MiCrypto.sign("/miotspec/prop/get", sn, nonce, data),
         )
     }

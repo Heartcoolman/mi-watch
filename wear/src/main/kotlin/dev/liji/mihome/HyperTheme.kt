@@ -70,10 +70,19 @@ data class Accent(val light: Color, val deep: Color) {
 }
 
 fun accentOf(category: String?): Accent = when (category) {
-    "light" -> Accent(Color(0xFFFFD08A), Color(0xFFFF8A34))          // 暖阳
-    "air-conditioner", "air-condition" -> Accent(Color(0xFF8ADBFF), Color(0xFF2A86FF)) // 冷蓝
-    "fan" -> Accent(Color(0xFF9BEFD6), Color(0xFF17B98A))
-    "curtain" -> Accent(Color(0xFFFFD9A8), Color(0xFFB98149))
+    "light", "light-strip", "night-light" -> Accent(Color(0xFFFFD08A), Color(0xFFFF8A34)) // 暖阳
+    "air-conditioner", "air-condition" -> Accent(Color(0xFF8ADBFF), Color(0xFF2A86FF))    // 冷蓝
+    "fan", "air-fresh", "ventilation-fan", "air-purifier" -> Accent(Color(0xFF9BEFD6), Color(0xFF17B98A))
+    "temperature-humidity-sensor", "thermometer", "air-monitor" -> Accent(Color(0xFF9FE8DA), Color(0xFF2FA894))
+    "humidifier", "water-purifier", "kettle", "washer", "dishwasher" -> Accent(Color(0xFFA8E4FF), Color(0xFF3AA6D9))
+    "lock", "door", "magnet-sensor" -> Accent(Color(0xFFFFDDA0), Color(0xFFD08A2E))
+    "camera", "doorbell" -> Accent(Color(0xFFD8B6FF), Color(0xFF8A4FE0))
+    "speaker", "television", "projector", "tv-box", "stb", "monitor" -> Accent(Color(0xFFFFB8D9), Color(0xFFE0508F))
+    "router", "repeater", "gateway" -> Accent(Color(0xFFB6C4FF), Color(0xFF4B63FF))
+    "gas-sensor", "smoke-sensor", "water-sensor" -> Accent(Color(0xFFFFC0A8), Color(0xFFE0603A))
+    "occupancy-sensor", "motion-sensor" -> Accent(Color(0xFFC8E8A0), Color(0xFF6FA83A))
+    "curtain", "window-opener", "airer" -> Accent(Color(0xFFFFD9A8), Color(0xFFB98149))
+    "vacuum", "robot" -> Accent(Color(0xFFA8E8C8), Color(0xFF35A87A))
     else -> Accent(Color(0xFFB6C4FF), Color(0xFF5B72FF))
 }
 
@@ -86,38 +95,138 @@ fun accentOf(category: String?): Accent = when (category) {
  */
 fun DrawScope.deviceGlyph(category: String?, color: Color) {
     val s = size.minDimension
-    val w = s * 0.115f
+    val w = s * 0.11f
+    fun line(x1: Float, y1: Float, x2: Float, y2: Float) =
+        drawLine(color, Offset(s * x1, s * y1), Offset(s * x2, s * y2), w, StrokeCap.Round)
+    fun ring(r: Float, cx: Float = 0.5f, cy: Float = 0.5f) =
+        drawCircle(color, s * r, Offset(s * cx, s * cy), style = Stroke(w))
+    fun dot(r: Float, cx: Float = 0.5f, cy: Float = 0.5f) =
+        drawCircle(color, s * r, Offset(s * cx, s * cy))
+    /** 同心弧，用来表达「发射/感应」：信号、声音、气体、雷达都是这个意思。 */
+    fun waves(count: Int, cx: Float, cy: Float, from: Float = 0.20f) {
+        repeat(count) { i ->
+            val r = s * (from + i * 0.16f)
+            drawArc(
+                color, startAngle = 205f, sweepAngle = 130f, useCenter = false,
+                topLeft = Offset(s * cx - r, s * cy - r),
+                size = Size(r * 2, r * 2),
+                style = Stroke(w, cap = StrokeCap.Round),
+            )
+        }
+    }
+
     when (category) {
-        "light" -> {
+        "light", "light-strip", "night-light" -> {
             val r = s * 0.185f
-            drawCircle(color, r, center)
-            val inner = r * 1.7f
-            val outer = r * 2.45f
+            dot(0.185f)
             repeat(8) { i ->
                 val a = i * 45.0 * Math.PI / 180.0
                 val dx = cos(a).toFloat()
                 val dy = sin(a).toFloat()
                 drawLine(
                     color,
-                    center + Offset(dx * inner, dy * inner),
-                    center + Offset(dx * outer, dy * outer),
+                    center + Offset(dx * r * 1.7f, dy * r * 1.7f),
+                    center + Offset(dx * r * 2.45f, dy * r * 2.45f),
                     w, StrokeCap.Round,
                 )
             }
         }
+
         // 三条长短不一的气流线，比雪花好画也更好认
-        "air-conditioner", "air-condition", "fan" -> {
-            listOf(0.30f to 0.80f, 0.50f to 1.00f, 0.70f to 0.62f).forEach { (y, len) ->
-                val half = s * 0.40f * len
-                drawLine(
-                    color,
-                    Offset(center.x - half, s * y),
-                    Offset(center.x + half, s * y),
-                    w, StrokeCap.Round,
-                )
-            }
+        "air-conditioner", "air-condition", "fan", "air-fresh", "ventilation-fan",
+        "hood", "air-purifier", "heater", "clothes-dryer",
+        -> listOf(0.30f to 0.80f, 0.50f to 1.00f, 0.70f to 0.62f).forEach { (y, len) ->
+            line(0.5f - 0.40f * len, y, 0.5f + 0.40f * len, y)
         }
-        else -> drawCircle(color, s * 0.28f, center, style = Stroke(w))
+
+        // 温度计：一根柱子 + 底部一个球
+        "temperature-humidity-sensor", "thermometer" -> {
+            line(0.5f, 0.20f, 0.5f, 0.60f)
+            dot(0.155f, 0.5f, 0.72f)
+        }
+
+        // 水滴
+        "humidifier", "water-purifier", "kettle", "dishwasher", "washer" -> {
+            line(0.5f, 0.20f, 0.30f, 0.58f)
+            line(0.5f, 0.20f, 0.70f, 0.58f)
+            drawArc(
+                color, startAngle = 0f, sweepAngle = 180f, useCenter = false,
+                topLeft = Offset(s * 0.28f, s * 0.36f), size = Size(s * 0.44f, s * 0.44f),
+                style = Stroke(w, cap = StrokeCap.Round),
+            )
+        }
+
+        // 感应/报警类：一个源点 + 同心弧
+        "occupancy-sensor", "motion-sensor", "gas-sensor", "smoke-sensor",
+        "magnet-sensor", "water-sensor", "air-monitor",
+        -> { dot(0.10f, 0.30f, 0.5f); waves(3, 0.30f, 0.5f) }
+
+        // 信号塔：底座 + 同心弧
+        "router", "repeater", "gateway" -> { line(0.28f, 0.78f, 0.72f, 0.78f); dot(0.09f, 0.5f, 0.78f); waves(3, 0.5f, 0.78f, 0.22f) }
+
+        // 挂锁
+        "lock", "door" -> {
+            drawRoundRect(
+                color, topLeft = Offset(s * 0.24f, s * 0.46f), size = Size(s * 0.52f, s * 0.36f),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(s * 0.09f), style = Stroke(w),
+            )
+            drawArc(
+                color, startAngle = 180f, sweepAngle = 180f, useCenter = false,
+                topLeft = Offset(s * 0.34f, s * 0.22f), size = Size(s * 0.32f, s * 0.32f),
+                style = Stroke(w, cap = StrokeCap.Round),
+            )
+        }
+
+        // 镜头
+        "camera", "doorbell" -> { ring(0.30f); dot(0.11f) }
+
+        // 音箱：箱体 + 一个发声圈
+        "speaker", "tv-box", "intercom" -> {
+            drawRoundRect(
+                color, topLeft = Offset(s * 0.28f, s * 0.16f), size = Size(s * 0.44f, s * 0.68f),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(s * 0.12f), style = Stroke(w),
+            )
+            ring(0.12f, 0.5f, 0.58f)
+        }
+
+        // 屏幕
+        "television", "projector", "monitor", "stb" -> {
+            drawRoundRect(
+                color, topLeft = Offset(s * 0.14f, s * 0.24f), size = Size(s * 0.72f, s * 0.46f),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(s * 0.09f), style = Stroke(w),
+            )
+            line(0.34f, 0.84f, 0.66f, 0.84f)
+        }
+
+        // 窗帘：两片波浪
+        "curtain", "window-opener", "airer" -> {
+            line(0.14f, 0.18f, 0.86f, 0.18f)
+            line(0.32f, 0.26f, 0.32f, 0.82f)
+            line(0.68f, 0.26f, 0.68f, 0.82f)
+        }
+
+        // 插座/开关面板
+        "switch", "outlet", "electric-power", "plug" -> {
+            drawRoundRect(
+                color, topLeft = Offset(s * 0.18f, s * 0.18f), size = Size(s * 0.64f, s * 0.64f),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(s * 0.16f), style = Stroke(w),
+            )
+            dot(0.07f, 0.39f, 0.44f); dot(0.07f, 0.61f, 0.44f)
+        }
+
+        // 扫地机：圆盘 + 一条边刷
+        "vacuum", "robot" -> { ring(0.30f); dot(0.09f, 0.5f, 0.5f) }
+
+        // 遥控器
+        "remote-control" -> {
+            drawRoundRect(
+                color, topLeft = Offset(s * 0.32f, s * 0.14f), size = Size(s * 0.36f, s * 0.72f),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(s * 0.14f), style = Stroke(w),
+            )
+            dot(0.065f, 0.5f, 0.34f); dot(0.065f, 0.5f, 0.58f)
+        }
+
+        else -> { ring(0.28f); dot(0.075f) }
     }
 }
 
