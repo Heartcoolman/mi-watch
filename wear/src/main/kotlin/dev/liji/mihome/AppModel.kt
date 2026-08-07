@@ -130,6 +130,27 @@ class AppModel(private val app: Context) {
 
     // ---------- 设备 ----------
 
+    /**
+     * 加载设备后立刻切换指定设备。给 adb 盲测用：
+     * 关掉 Wi-Fi 后 adb 就断了，只能靠这一条指令在蓝牙链路上发起一次完整的读+写。
+     */
+    fun startThenToggle(did: String) {
+        _state.value = _state.value.copy(screen = Screen.Devices)
+        scope.launch {
+            _state.value = _state.value.copy(busy = true, error = null)
+            runCatching { withContext(Dispatchers.IO) { loadDevices() } }
+                .onSuccess {
+                    _state.value = _state.value.copy(devices = it, busy = false)
+                    Flog.i("盲测：设备已加载 ${it.size} 个，开始切换 $did")
+                    toggle(did)
+                }
+                .onFailure {
+                    Flog.e("盲测：加载设备失败", it)
+                    _state.value = _state.value.copy(busy = false, error = it.message)
+                }
+        }
+    }
+
     fun refresh() {
         scope.launch {
             _state.value = _state.value.copy(busy = true, error = null)
