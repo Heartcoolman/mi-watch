@@ -65,6 +65,7 @@ private val QUICK_READONLY = setOf(
 
 sealed interface Control {
     val siid: Int
+    val piid: Int
     val label: String
 
     /** 是否属于主服务。非主服务的控件在小屏上默认收进「更多」。 */
@@ -75,7 +76,7 @@ sealed interface Control {
 
     data class Toggle(
         override val siid: Int,
-        val piid: Int,
+        override val piid: Int,
         override val label: String,
         override val primary: Boolean,
         override val quick: Boolean,
@@ -85,7 +86,7 @@ sealed interface Control {
 
     data class Range(
         override val siid: Int,
-        val piid: Int,
+        override val piid: Int,
         override val label: String,
         override val primary: Boolean,
         override val quick: Boolean,
@@ -93,11 +94,21 @@ sealed interface Control {
         val max: Double,
         val step: Double,
         val unit: String?,
-    ) : Control
+    ) : Control {
+        /** 步进为整数时按整数发值，避免 26.0 这种写法。 */
+        val integral get() = step % 1.0 == 0.0 && min % 1.0 == 0.0
+
+        /** 色温这类跨度极大的量，在 33mm 圆屏上连续滑动没法用，UI 会改渲染成几个预设档。 */
+        val isKelvin get() = unit == "kelvin"
+
+        fun clamp(v: Double): Double = v.coerceIn(min, max)
+
+        fun stepped(v: Double): Double = clamp(min + Math.round((v - min) / step) * step)
+    }
 
     data class Choice(
         override val siid: Int,
-        val piid: Int,
+        override val piid: Int,
         override val label: String,
         override val primary: Boolean,
         override val quick: Boolean,
@@ -106,7 +117,7 @@ sealed interface Control {
 
     data class Readout(
         override val siid: Int,
-        val piid: Int,
+        override val piid: Int,
         override val label: String,
         override val primary: Boolean,
         override val quick: Boolean,

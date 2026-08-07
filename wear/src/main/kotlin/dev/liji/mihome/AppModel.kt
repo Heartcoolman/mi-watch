@@ -12,10 +12,10 @@ import dev.liji.mihome.core.MiApi
 import dev.liji.mihome.core.MiAuth
 import dev.liji.mihome.core.MiQrExpiredException
 import dev.liji.mihome.core.PropRef
+import dev.liji.mihome.core.PropValue
 import dev.liji.mihome.core.Session
 import dev.liji.mihome.core.SpecInstance
 import dev.liji.mihome.core.clearSession
-import dev.liji.mihome.core.code
 import dev.liji.mihome.core.loadSession
 import dev.liji.mihome.core.saveSession
 import dev.liji.mihome.core.toControls
@@ -31,21 +31,41 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.Base64
 
+typealias PropKey = Pair<Int, Int>
+
 sealed interface Screen {
     data object Loading : Screen
     data class Login(val qr: Bitmap?, val hint: String) : Screen
     data object Devices : Screen
+    data class Detail(val did: String) : Screen
+}
+
+/** 属性当前值。刻意不透出 JSON 类型，:wear 完全不依赖 kotlinx-serialization。 */
+data class DevValue(val ok: Boolean, val bool: Boolean? = null, val num: Double? = null) {
+    companion object {
+        // asBool/asDouble 在逐项 code 非 0 时返回 null，离线设备不会渲染出陈旧值
+        fun of(p: PropValue) = DevValue(p.code == 0, p.asBool, p.asDouble)
+    }
 }
 
 data class Dev(
     val did: String,
     val name: String,
     val online: Boolean,
-    val power: Control.Toggle? = null,
-    /** null = 未知或不可用（读回来的逐项 code 非 0），UI 显示「—」并禁用。 */
-    val on: Boolean? = null,
+    val controls: List<Control> = emptyList(),
+    val values: Map<PropKey, DevValue> = emptyMap(),
     val busy: Boolean = false,
-)
+) {
+    val power: Control.Toggle?
+        get() = controls.filterIsInstance<Control.Toggle>().firstOrNull { it.isPower }
+
+    val on: Boolean? get() = power?.let { values[it.siid to it.piid]?.bool }
+
+    /** 表上默认只显示这些；其余是配置项，留给手机端。 */
+    val quick: List<Control> get() = controls.filter { it.quick }
+
+    fun valueOf(c: Control): DevValue? = values[c.siid to c.piid]
+}
 
 data class UiState(
     val screen: Screen = Screen.Loading,
@@ -86,16 +106,14 @@ class AppModel(private val app: Context) {
         loginJob = scope.launch {
             runCatching {
                 withContext(Dispatchers.IO) {
-                    // 客户端必须在绑定块内部构造，否则会复用蓝牙代理的连接，绑定白做。
+                    // 客户端必须在绑定块内部构造，否则会复用原网络的连接，绑定白做。
                     Net.withWifi(app) { bound ->
                         Flog.i("开始扫码登录 (wifi=$bound)")
                         val auth = MiAuth(store)
                         val ch = Flog.timed("qr-gen") { auth.startQrLogin() }
                         val bmp = qrBitmap(ch.qrData)
                         withContext(Dispatchers.Main) {
-                            _state.value = _state.value.copy(
-                                screen = Screen.Login(bmp, "用米家 App 扫码"),
-                            )
+                            _state.value = _state.value.copy(screen = Screen.Login(bmp, "用米家 App 扫码"))
                         }
                         Flog.timed("qr-poll") { auth.awaitQrScan(ch.lp) }
                     }
@@ -115,8 +133,6 @@ class AppModel(private val app: Context) {
     /**
      * 开发期兜底：桌面 harness 取到的会话直接注入。
      * `adb shell am start -n dev.liji.mihome/.MainActivity --es session '<blob>'`
-     * 蓝牙代理万一走不完登录状态机，这条路能让开发继续——
-     * passToken 长期有效且永不轮换，在 Mac 上成功一次就永久够用。
      */
     fun importSession(blob: String): Boolean = runCatching {
         val f = String(Base64.getUrlDecoder().decode(blob)).split("\n")
@@ -128,12 +144,32 @@ class AppModel(private val app: Context) {
         true
     }.onFailure { Flog.e("会话注入失败", it) }.getOrDefault(false)
 
+    // ---------- 导航 ----------
+
+    fun open(did: String) {
+        _state.value = _state.value.copy(screen = Screen.Detail(did), error = null)
+        loadDetail(did)
+    }
+
+    fun back() {
+        _state.value = _state.value.copy(screen = Screen.Devices, error = null)
+    }
+
     // ---------- 设备 ----------
 
-    /**
-     * 加载设备后立刻切换指定设备。给 adb 盲测用：
-     * 关掉 Wi-Fi 后 adb 就断了，只能靠这一条指令在蓝牙链路上发起一次完整的读+写。
-     */
+    fun refresh() {
+        scope.launch {
+            _state.value = _state.value.copy(busy = true, error = null)
+            runCatching { withContext(Dispatchers.IO) { loadDevices() } }
+                .onSuccess { _state.value = _state.value.copy(devices = it, busy = false) }
+                .onFailure {
+                    Flog.e("刷新失败", it)
+                    _state.value = _state.value.copy(busy = false, error = friendly(it))
+                }
+        }
+    }
+
+    /** 加载设备后立刻切换指定设备。给 `deploy.sh test` 的无人值守验证用。 */
     fun startThenToggle(did: String) {
         _state.value = _state.value.copy(screen = Screen.Devices)
         scope.launch {
@@ -146,19 +182,23 @@ class AppModel(private val app: Context) {
                 }
                 .onFailure {
                     Flog.e("盲测：加载设备失败", it)
-                    _state.value = _state.value.copy(busy = false, error = it.message)
+                    _state.value = _state.value.copy(busy = false, error = friendly(it))
                 }
         }
     }
 
-    fun refresh() {
+    /** 加载设备后直接进某个设备的详情。给截图核对与 adb 调试用。 */
+    fun startThenOpen(did: String) {
         scope.launch {
-            _state.value = _state.value.copy(busy = true, error = null)
+            _state.value = _state.value.copy(screen = Screen.Devices, busy = true, error = null)
             runCatching { withContext(Dispatchers.IO) { loadDevices() } }
-                .onSuccess { _state.value = _state.value.copy(devices = it, busy = false) }
+                .onSuccess {
+                    _state.value = _state.value.copy(devices = it, busy = false)
+                    open(did)
+                }
                 .onFailure {
-                    Flog.e("刷新失败", it)
-                    _state.value = _state.value.copy(busy = false, error = it.message ?: "刷新失败")
+                    Flog.e("加载设备失败", it)
+                    _state.value = _state.value.copy(busy = false, error = friendly(it))
                 }
         }
     }
@@ -168,57 +208,92 @@ class AppModel(private val app: Context) {
         val devs = Flog.timed("device_list") { api.devices(uid, homeId) }
             .filter { it.did in pinned && !it.isBle }
             .map { info ->
-                val power = info.specType?.let { t ->
-                    runCatching { powerToggle(specs.spec(t)) }
+                val controls = info.specType?.let { t ->
+                    runCatching { controlsOf(specs.spec(t)) }
                         .onFailure { Flog.w("spec 取用失败 ${info.did}: ${it.message}") }
                         .getOrNull()
-                }
-                Dev(did = info.did, name = info.name, online = info.online, power = power)
+                }.orEmpty()
+                Dev(did = info.did, name = info.name, online = info.online, controls = controls)
             }
             .sortedBy { pinned.indexOf(it.did) }
 
-        return readPower(devs)
+        // 列表页只读开关：一次批量请求拿全部，蓝牙链路上少一个往返就是几百毫秒
+        return readProps(devs) { listOfNotNull(it.power) }
     }
 
-    /** 一次批量 prop/get 拿全部开关状态——蓝牙代理上少一个往返就是少几百毫秒。 */
-    private fun readPower(devs: List<Dev>): List<Dev> {
-        val refs = devs.mapNotNull { d -> d.power?.let { PropRef(d.did, it.siid, it.piid) } }
+    private fun loadDetail(did: String) {
+        scope.launch {
+            _state.value = _state.value.copy(busy = true)
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    val dev = _state.value.devices.firstOrNull { it.did == did } ?: error("设备不存在")
+                    readProps(listOf(dev)) { d -> d.quick }.first()
+                }
+            }.onSuccess { d ->
+                putDev(d)
+                _state.value = _state.value.copy(busy = false)
+            }.onFailure {
+                Flog.e("读取 $did 详情失败", it)
+                _state.value = _state.value.copy(busy = false, error = friendly(it))
+            }
+        }
+    }
+
+    /** 一次 prop/get 读多个设备的多个属性——批量是蓝牙链路上最划算的优化。 */
+    private fun readProps(devs: List<Dev>, pick: (Dev) -> List<Control>): List<Dev> {
+        val refs = devs.flatMap { d -> pick(d).map { PropRef(d.did, it.siid, it.piid) } }
         if (refs.isEmpty()) return devs
-        val values = Flog.timed("prop/get x${refs.size}") { api.propGet(refs) }
+        val got = Flog.timed("prop/get x${refs.size}") { api.propGet(refs) }
+        val byKey = got.associateBy { Triple(it.did, it.siid, it.piid) }
         return devs.map { d ->
-            // asBool 在逐项 code 非 0 时返回 null——设备离线时不把陈旧值当真值渲染。
-            d.copy(
-                on = values.firstOrNull {
-                    it.did == d.did && it.siid == d.power?.siid && it.piid == d.power?.piid
-                }?.asBool,
-            )
+            val merged = d.values.toMutableMap()
+            pick(d).forEach { c ->
+                byKey[Triple(d.did, c.siid, c.piid)]?.let { merged[c.siid to c.piid] = DevValue.of(it) }
+            }
+            d.copy(values = merged)
         }
     }
 
     fun toggle(did: String) {
         val dev = _state.value.devices.firstOrNull { it.did == did } ?: return
         val power = dev.power ?: return
-        val target = !(dev.on ?: false)
+        write(did, power, DevValue(true, bool = !(dev.on ?: false)))
+    }
 
-        // 乐观更新：链路可能要几秒，即时本地反馈是「跟手」和「坏了」的分界。
-        update(did) { it.copy(on = target, busy = true) }
+    /**
+     * 写一个属性。乐观更新：先本地翻转再发请求，失败回滚。
+     * 蓝牙下一次写要 200–600ms，没有即时反馈会让人以为没按上。
+     */
+    fun write(did: String, c: Control, target: DevValue) {
+        val dev = _state.value.devices.firstOrNull { it.did == did } ?: return
+        val prev = dev.valueOf(c)
+        putValue(did, c, target, busy = true)
 
         scope.launch {
             runCatching {
                 withContext(Dispatchers.IO) {
-                    val ok = Flog.timed("prop/set $did ${power.siid}.${power.piid}=$target") {
-                        api.setBool(did, power.siid, power.piid, target)
+                    val label = "prop/set $did ${c.siid}.${c.piid}"
+                    val ok = Flog.timed(label) {
+                        when (c) {
+                            is Control.Toggle -> api.setBool(did, c.siid, c.piid, target.bool == true)
+                            is Control.Range -> api.setNumber(
+                                did, c.siid, c.piid, c.stepped(target.num ?: 0.0), c.integral,
+                            )
+                            is Control.Choice -> api.setInt(did, c.siid, c.piid, (target.num ?: 0.0).toInt())
+                            is Control.Readout -> error("只读属性不可写")
+                        }
                     }
                     check(ok) { "写入被拒绝" }
                     delay(800)
-                    readPower(listOf(dev)).first().on
+                    // 回读确认：设备可能拒绝或钳制到别的值（比如空调温度超范围）
+                    readProps(listOf(dev)) { listOf(c) }.first().valueOf(c)
                 }
             }.onSuccess { actual ->
-                update(did) { it.copy(on = actual, busy = false) }
+                putValue(did, c, actual ?: target, busy = false)
             }.onFailure { e ->
-                Flog.e("切换失败 $did", e)
-                update(did) { it.copy(on = dev.on, busy = false) } // 回滚
-                _state.value = _state.value.copy(error = "${dev.name}：${e.message}")
+                Flog.e("写入失败 $did ${c.siid}.${c.piid}", e)
+                putValue(did, c, prev, busy = false)
+                _state.value = _state.value.copy(error = "${dev.name}：${friendly(e)}")
             }
         }
     }
@@ -235,9 +310,23 @@ class AppModel(private val app: Context) {
 
     // ---------- 内部 ----------
 
-    private fun update(did: String, f: (Dev) -> Dev) {
+    private fun putDev(d: Dev) {
         _state.value = _state.value.copy(
-            devices = _state.value.devices.map { if (it.did == did) f(it) else it },
+            devices = _state.value.devices.map { if (it.did == d.did) d else it },
+        )
+    }
+
+    private fun putValue(did: String, c: Control, v: DevValue?, busy: Boolean) {
+        _state.value = _state.value.copy(
+            devices = _state.value.devices.map { d ->
+                if (d.did != did) d
+                else d.copy(
+                    busy = busy,
+                    values = d.values.toMutableMap().apply {
+                        if (v == null) remove(c.siid to c.piid) else put(c.siid to c.piid, v)
+                    },
+                )
+            },
         )
     }
 
@@ -252,17 +341,21 @@ class AppModel(private val app: Context) {
         return home.uid to home.id
     }
 
-    private fun powerToggle(spec: SpecInstance): Control.Toggle? =
-        spec.toControls(specs.translations(spec.type)).filterIsInstance<Control.Toggle>()
-            .firstOrNull { it.isPower }
+    private fun controlsOf(spec: SpecInstance): List<Control> =
+        spec.toControls(specs.translations(spec.type))
+
+    /** UnknownHostException 在这台表上最常见的成因是深度 Doze 掐了网络，直接说人话。 */
+    private fun friendly(e: Throwable): String = when {
+        e.message?.contains("Unable to resolve host") == true -> "网络不可用（表可能在休眠）"
+        else -> e.message ?: e::class.simpleName ?: "未知错误"
+    }
 
     private fun qrBitmap(data: String, size: Int = 360): Bitmap {
         val m = QRCodeWriter().encode(
             data, BarcodeFormat.QR_CODE, size, size,
             mapOf(
                 EncodeHintType.ERROR_CORRECTION to ErrorCorrectionLevel.L,
-                // 静默区压到 2 个模块：33mm 圆屏上每一个像素都要省
-                EncodeHintType.MARGIN to 2,
+                EncodeHintType.MARGIN to 2, // 静默区压到 2 个模块：33mm 圆屏每个像素都要省
                 EncodeHintType.CHARACTER_SET to "UTF-8",
             ),
         )

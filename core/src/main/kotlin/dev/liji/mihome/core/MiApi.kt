@@ -182,6 +182,18 @@ class MiApi(private val store: Store, private val auth: MiAuth, var verbose: Boo
     fun setInt(did: String, siid: Int, piid: Int, value: Int): Boolean =
         propSet(listOf(PropRef(did, siid, piid) to JsonPrimitive(value))).code() == 0
 
+    /**
+     * 数值属性。[integral] 为真时按整数发——像空调设定温度这种 format 是 float
+     * 但步进为 1 的属性，发 26 比发 26.0 更贴近米家 App 自己的行为。
+     */
+    fun setNumber(did: String, siid: Int, piid: Int, value: Double, integral: Boolean): Boolean =
+        propSet(
+            listOf(
+                PropRef(did, siid, piid) to
+                    if (integral) JsonPrimitive(value.toLong()) else JsonPrimitive(value),
+            ),
+        ).code() == 0
+
     fun propSet(items: List<Pair<PropRef, JsonElement>>): JsonObject = post(
         "miotspec/prop/set",
         bodyOf {

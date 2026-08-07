@@ -49,6 +49,13 @@ class MainActivity : ComponentActivity() {
             model.startThenToggle(did)
             return true
         }
+
+        // --es open <did>：直接进详情页，供截图核对渲染效果（省得靠猜坐标点击）
+        intent.getStringExtra("open")?.let { did ->
+            Flog.i("intent: 打开详情 $did")
+            model.startThenOpen(did)
+            return true
+        }
         return false
     }
 }
