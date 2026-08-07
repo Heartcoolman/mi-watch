@@ -218,7 +218,18 @@ class AppModel(private val app: Context) {
             .sortedBy { pinned.indexOf(it.did) }
 
         // 列表页只读开关：一次批量请求拿全部，蓝牙链路上少一个往返就是几百毫秒
-        return readProps(devs) { listOfNotNull(it.power) }
+        return readProps(devs) { listOfNotNull(it.power) }.also { syncTile(it) }
+    }
+
+    /** 把最后已知状态写进缓存，Tile 靠它瞬间出图（它不能发网络请求）。 */
+    private fun syncTile(devs: List<Dev>) {
+        TileState.save(
+            app,
+            devs.mapNotNull { d ->
+                d.power?.let { TileState.Item(d.did, d.name, d.on, it.siid, it.piid) }
+            },
+        )
+        MiTileService.requestUpdate(app)
     }
 
     private fun loadDetail(did: String) {
@@ -289,7 +300,12 @@ class AppModel(private val app: Context) {
                     readProps(listOf(dev)) { listOf(c) }.first().valueOf(c)
                 }
             }.onSuccess { actual ->
-                putValue(did, c, actual ?: target, busy = false)
+                val v = actual ?: target
+                putValue(did, c, v, busy = false)
+                if (c == dev.power) {
+                    TileState.put(app, did, v.bool)
+                    MiTileService.requestUpdate(app)
+                }
             }.onFailure { e ->
                 Flog.e("写入失败 $did ${c.siid}.${c.piid}", e)
                 putValue(did, c, prev, busy = false)

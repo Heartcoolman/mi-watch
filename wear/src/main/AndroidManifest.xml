@@ -32,5 +32,29 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Tile 的动作载体：透明无界面，执行完开关即退。
+             必须 exported——它是被系统的 Tile 进程通过 LaunchAction 拉起的。 -->
+        <activity
+            android:name=".ToggleActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
+        <service
+            android:name=".MiTileService"
+            android:exported="true"
+            android:icon="@mipmap/ic_launcher"
+            android:label="米家"
+            android:permission="com.google.android.wearable.permission.BIND_TILE_PROVIDER">
+            <intent-filter>
+                <action android:name="androidx.wear.tiles.action.BIND_TILE_PROVIDER" />
+            </intent-filter>
+            <meta-data
+                android:name="androidx.wear.tiles.PREVIEW"
+                android:resource="@drawable/ic_launcher_fg" />
+        </service>
     </application>
 </manifest>

@@ -53,4 +53,10 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.10.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("com.google.zxing:core:3.5.3")
+
+    // Tile。protolayout 是独立于 Compose 的 builder 式布局系统，在系统进程里渲染，
+    // 所以 Tile 的存在与否跟主界面用不用 Compose 无关。
+    implementation("androidx.wear.tiles:tiles:1.6.1")
+    implementation("androidx.wear.protolayout:protolayout:1.4.1")
+    implementation("androidx.wear.protolayout:protolayout-material:1.4.1")
 }
