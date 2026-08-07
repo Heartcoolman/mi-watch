@@ -1,0 +1,16 @@
+#!/bin/sh
+# core CLI 的包装脚本。
+# 本机 java 不在 PATH、JAVA_HOME 也没设，唯一的 JDK 是 Android Studio 自带的 JBR 21，
+# 所以直接跑 build/install 里的启动脚本会报 "Unable to locate a Java Runtime"。
+set -e
+DIR=$(cd "$(dirname "$0")" && pwd)
+export JAVA_HOME="${JAVA_HOME:-/Applications/Android Studio.app/Contents/jbr/Contents/Home}"
+
+BIN="$DIR/core/build/install/core/bin/core"
+if [ ! -x "$BIN" ]; then
+    echo "未构建，正在构建…" >&2
+    GRADLE=$(ls -d "$HOME"/.gradle/wrapper/dists/gradle-8.14.5-bin/*/gradle-8.14.5/bin/gradle | head -1)
+    "$GRADLE" -p "$DIR" :core:installDist --console=plain -q
+fi
+
+exec "$BIN" "$@"
