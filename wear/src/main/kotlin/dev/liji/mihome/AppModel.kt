@@ -382,16 +382,23 @@ class AppModel(private val app: Context) {
         }
     }
 
-    /** 把最后已知状态写进缓存，Tile 靠它瞬间出图（它不能发网络请求）。 */
+    /**
+     * 把最后已知状态写进缓存，Tile 靠它瞬间出图（它不能发网络请求）。
+     *
+     * 收藏排在前面，然后用其他可开关设备补满六格——卡片一屏就这么大，
+     * 空着的格子不会因为「你还没收藏够」而变得有用。顺序取自设备列表本身的排序，
+     * 所以设备集合不变时位置是稳定的，肌肉记忆不会被打乱。
+     * 只读传感器不进：卡片上的每一格都是一次点击，放个点不动的东西等于浪费一格。
+     */
     private fun syncTile(devs: List<Dev>) {
         val fav = _state.value.favIds
+        val switchable = devs.filter { it.power != null }
+        val ordered = switchable.sortedBy { fav.indexOf(it.did).takeIf { i -> i >= 0 } ?: (fav.size + 1) }
         TileState.save(
             app,
-            // Tile 只放收藏里可开关的那几个——它一屏就三格，放传感器等于浪费
-            fav.mapNotNull { id -> devs.firstOrNull { it.did == id } }
-                .mapNotNull { d ->
-                    d.power?.let { TileState.Item(d.did, d.name, d.on, it.siid, it.piid, d.category) }
-                },
+            ordered.take(TILE_SLOTS).mapNotNull { d ->
+                d.power?.let { TileState.Item(d.did, d.name, d.on, it.siid, it.piid, d.category) }
+            },
         )
         MiTileService.requestUpdate(app)
     }
@@ -616,6 +623,9 @@ class AppModel(private val app: Context) {
 
         /** 一次 prop/get 的属性上限。实测 58 个没问题，留出余量。 */
         const val PROP_BATCH = 80
+
+        /** Tile 的格数：2 列 × 3 行。 */
+        const val TILE_SLOTS = 6
     }
 
     /**

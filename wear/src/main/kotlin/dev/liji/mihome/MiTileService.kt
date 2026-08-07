@@ -55,12 +55,19 @@ class MiTileService : TileService() {
         ResourceBuilders.Resources.Builder().setVersion(RESOURCES_VERSION).build(),
     )
 
+    /**
+     * 2 列 × 3 行，六个设备。
+     *
+     * 旧版是三条整宽长条，一条只放一个名字，横向空间几乎全废——和列表页当初一样的毛病。
+     * 圆屏的内接正方形是 226/√2 ≈ 160dp，所以网格必须比它更瘦：
+     * 70×58dp 的格子配 6dp 间距，整体 146×186dp，四角落在
+     * √(57²+77²)+16 ≈ 111.8dp 处，刚好在 113dp 的半径内。再大一点就要被切角。
+     */
     private fun layout(
         items: List<TileState.Item>,
         device: DeviceParametersBuilders.DeviceParameters,
     ): LayoutElementBuilders.LayoutElement {
         val column = LayoutElementBuilders.Column.Builder()
-            .setWidth(androidx.wear.protolayout.DimensionBuilders.expand())
 
         if (items.isEmpty()) {
             column.addContent(
@@ -70,35 +77,31 @@ class MiTileService : TileService() {
                     .build(),
             )
         } else {
-            items.take(3).forEachIndexed { i, item ->
-                if (i > 0) column.addContent(spacer())
-                column.addContent(chip(item, device))
+            items.take(GRID_COLS * GRID_ROWS).chunked(GRID_COLS).forEachIndexed { r, row ->
+                if (r > 0) column.addContent(gap(GAP))
+                val line = LayoutElementBuilders.Row.Builder()
+                row.forEachIndexed { c, item ->
+                    if (c > 0) line.addContent(hgap(GAP))
+                    line.addContent(cell(item, device))
+                }
+                // 落单的补个等宽空位，否则这一行会被居中排版拽偏
+                if (row.size < GRID_COLS) {
+                    line.addContent(hgap(GAP))
+                    line.addContent(hgap(CELL_W))
+                }
+                column.addContent(line.build())
             }
         }
 
-        // 不用 PrimaryLayout：它的内容区留白太多，480×480 上三个 chip 第三个会被切掉。
-        // 自己用 Box 居中 + 8dp 内边距，正好放得下。
         return LayoutElementBuilders.Box.Builder()
             .setWidth(androidx.wear.protolayout.DimensionBuilders.expand())
             .setHeight(androidx.wear.protolayout.DimensionBuilders.expand())
-            .setModifiers(
-                ModifiersBuilders.Modifiers.Builder()
-                    // 横向留白要比纵向大：圆屏会把整宽 chip 的两端切掉
-                    .setPadding(
-                        ModifiersBuilders.Padding.Builder()
-                            .setStart(androidx.wear.protolayout.DimensionBuilders.dp(22f))
-                            .setEnd(androidx.wear.protolayout.DimensionBuilders.dp(22f))
-                            .setTop(androidx.wear.protolayout.DimensionBuilders.dp(6f))
-                            .setBottom(androidx.wear.protolayout.DimensionBuilders.dp(6f))
-                            .build(),
-                    )
-                    .build(),
-            )
             .addContent(column.build())
             .build()
     }
 
-    private fun chip(
+    /** 一个格子：整块可点，颜色表达开关，名字最多两行。 */
+    private fun cell(
         item: TileState.Item,
         device: DeviceParametersBuilders.DeviceParameters,
     ): LayoutElementBuilders.LayoutElement {
@@ -121,25 +124,65 @@ class MiTileService : TileService() {
             )
             .build()
 
-        // 开着＝设备身份色，关着/未知＝深灰，和主界面的卡片同一套语言。
-        // protolayout 的 Chip 不支持渐变，取渐变两端的中间色作近似。
-        // 不加副标题：三个 chip 各带一行副标题在 480×480 上放不下，第三个会被切掉。
-        val colors = if (item.on == true) {
+        // 开着＝设备身份色，关着/未知＝深灰，和主界面的磁贴同一套语言。
+        // protolayout 不支持渐变，取渐变两端的中间色作近似。
+        val on = item.on == true
+        val bg = if (on) {
             val acc = accentOf(item.category)
-            ChipColors(lerp(acc.light, acc.deep, 0.45f).toArgb(), Hyper.OnAccent.toArgb())
+            lerp(acc.light, acc.deep, 0.45f).toArgb()
         } else {
-            ChipColors(Hyper.Surface.toArgb(), Hyper.OnSurface.toArgb())
+            Hyper.Surface.toArgb()
         }
+        val fg = if (on) Hyper.OnAccent.toArgb() else Hyper.OnSurface.toArgb()
 
-        return Chip.Builder(this, click, device)
-            .setPrimaryLabelContent(if (item.on == null) "${item.name} —" else item.name)
-            .setChipColors(colors)
-            .setWidth(androidx.wear.protolayout.DimensionBuilders.expand())
+        return LayoutElementBuilders.Box.Builder()
+            .setWidth(androidx.wear.protolayout.DimensionBuilders.dp(CELL_W))
+            .setHeight(androidx.wear.protolayout.DimensionBuilders.dp(CELL_H))
+            .setModifiers(
+                ModifiersBuilders.Modifiers.Builder()
+                    .setBackground(
+                        ModifiersBuilders.Background.Builder()
+                            .setColor(androidx.wear.protolayout.ColorBuilders.argb(bg))
+                            .setCorner(
+                                ModifiersBuilders.Corner.Builder()
+                                    .setRadius(androidx.wear.protolayout.DimensionBuilders.dp(16f))
+                                    .build(),
+                            )
+                            .build(),
+                    )
+                    .setClickable(click)
+                    .setPadding(
+                        ModifiersBuilders.Padding.Builder()
+                            .setStart(androidx.wear.protolayout.DimensionBuilders.dp(5f))
+                            .setEnd(androidx.wear.protolayout.DimensionBuilders.dp(5f))
+                            .build(),
+                    )
+                    .build(),
+            )
+            .addContent(
+                LayoutElementBuilders.Text.Builder()
+                    .setText(if (item.on == null) "${item.name} —" else item.name)
+                    .setMaxLines(2)
+                    .setMultilineAlignment(LayoutElementBuilders.TEXT_ALIGN_CENTER)
+                    .setOverflow(LayoutElementBuilders.TEXT_OVERFLOW_ELLIPSIZE_END)
+                    .setFontStyle(
+                        LayoutElementBuilders.FontStyle.Builder()
+                            .setSize(androidx.wear.protolayout.DimensionBuilders.sp(11f))
+                            .setWeight(LayoutElementBuilders.FONT_WEIGHT_MEDIUM)
+                            .setColor(androidx.wear.protolayout.ColorBuilders.argb(fg))
+                            .build(),
+                    )
+                    .build(),
+            )
             .build()
     }
 
-    private fun spacer() = LayoutElementBuilders.Spacer.Builder()
-        .setHeight(androidx.wear.protolayout.DimensionBuilders.dp(4f))
+    private fun hgap(w: Float) = LayoutElementBuilders.Spacer.Builder()
+        .setWidth(androidx.wear.protolayout.DimensionBuilders.dp(w))
+        .build()
+
+    private fun gap(h: Float) = LayoutElementBuilders.Spacer.Builder()
+        .setHeight(androidx.wear.protolayout.DimensionBuilders.dp(h))
         .build()
 
     /**
@@ -158,6 +201,12 @@ class MiTileService : TileService() {
 
     companion object {
         private const val RESOURCES_VERSION = "1"
+
+        private const val GRID_COLS = 2
+        private const val GRID_ROWS = 3
+        private const val CELL_W = 70f
+        private const val CELL_H = 58f
+        private const val GAP = 6f
         /** 状态变了就让系统重绘 Tile。 */
         fun requestUpdate(ctx: android.content.Context) {
             runCatching {
