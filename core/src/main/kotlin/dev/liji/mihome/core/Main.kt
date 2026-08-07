@@ -45,6 +45,7 @@ fun main(args: Array<String>) {
             "action" -> action(rest)
             "spec" -> spec(rest)
             "controls-urn" -> controlsUrn(rest)
+            "bundle" -> bundle(rest)
             "session" -> session()
             "logout" -> { store.clearSession(); println("已清除会话（deviceId 保留）") }
             else -> usage()
@@ -75,6 +76,7 @@ private fun usage() = println(
       action <did> <siid> <aiid>     调用 action
       spec <urn>                     打印 MIoT spec 树（免登录）
       controls-urn <urn>             打印归约出的控件（免登录，调 toControls 用）
+      bundle <outdir> <urn>...       把 spec 与中文翻译写进 assets，供表上首启即用
       session                        导出会话 blob（供 adb --es session 注入）
       logout                         清除会话
     环境变量 MIHOME_VERBOSE=1 打印请求与响应
@@ -236,6 +238,23 @@ private fun controlsUrn(a: List<String>) {
             is Control.Readout -> println("$tag 只读   s${c.siid} p${c.piid}  ${c.label} ${c.unit.orEmpty()}")
         }
     }
+}
+
+/**
+ * 预置 spec 到 assets。表上首启就不必对着蓝牙代理拉 spec——
+ * 那是交互路径上最容易吃满 30 秒最坏延迟的一步。
+ */
+private fun bundle(a: List<String>) {
+    require(a.size >= 2) { "用法: bundle <outdir> <urn>..." }
+    val out = File(a[0]).apply { mkdirs() }
+    val client = SpecClient(out) // 缓存目录直接就是 assets 目录，写进去即完成预置
+    a.drop(1).forEach { urn ->
+        val s = client.spec(urn)
+        val t = client.translations(urn)
+        val n = s.toControls(t).count { it.quick }
+        println("✓ ${s.type}  服务 ${s.services.size} 个，常用控件 $n 个")
+    }
+    println("\n已写入 ${out.absolutePath}（${out.listFiles()?.size ?: 0} 个文件）")
 }
 
 private fun session() {
