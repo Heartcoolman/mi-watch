@@ -48,6 +48,8 @@ data class DeviceInfo(
     val specType: String?,
     /** 非空表示是网关下挂的子设备。 */
     val parentId: String?,
+    /** 米家自己记的使用次数。用来给「首次启动自动收藏」排序——比按名字字母序靠谱得多。 */
+    val cnt: Int = 0,
 ) {
     /**
      * BLE 设备的 did 形如 blt.3.xxx，经网关中转。
@@ -219,6 +221,7 @@ class MiApi(private val store: Store, private val auth: MiAuth, var verbose: Boo
                     online = o["isOnline"]?.jsonPrimitive?.booleanOrNull ?: false,
                     specType = o["spec_type"]?.jsonPrimitive?.contentOrNull,
                     parentId = o["parent_id"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotEmpty() },
+                    cnt = o["cnt"]?.jsonPrimitive?.intOrNull ?: 0,
                 )
             }
 

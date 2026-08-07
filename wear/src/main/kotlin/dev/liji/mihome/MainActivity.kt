@@ -50,6 +50,13 @@ class MainActivity : ComponentActivity() {
             return true
         }
 
+        // --es resetfav 1：清掉收藏重新自动挑选，用来验证首次启动的默认值
+        if (intent.getStringExtra("resetfav") != null) {
+            Flog.i("intent: 重置收藏")
+            model.resetFavorites()
+            return true
+        }
+
         // --es open <did>：直接进详情页，供截图核对渲染效果（省得靠猜坐标点击）
         intent.getStringExtra("open")?.let { did ->
             Flog.i("intent: 打开详情 $did")

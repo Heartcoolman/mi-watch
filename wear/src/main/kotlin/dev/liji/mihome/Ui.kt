@@ -30,6 +30,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
@@ -53,6 +54,7 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -257,9 +259,7 @@ private fun SensorCard(d: Dev, onOpen: () -> Unit) {
             modifier = Modifier.fillMaxSize().padding(start = 9.dp, end = 11.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            val icon = rememberDeviceIcon(d.model)
-            if (icon != null) Image(icon, contentDescription = null, modifier = Modifier.size(28.dp))
-            else Canvas(Modifier.size(18.dp)) { deviceGlyph(d.category, acc.deep) }
+            DeviceIconOrGlyph(d, acc.deep, 28.dp, 18.dp)
             Spacer(Modifier.width(7.dp))
             Text(
                 d.name, color = Hyper.OnSurface, fontSize = 12.sp,
@@ -332,15 +332,7 @@ private fun DeviceCard(d: Dev, onToggle: () -> Unit, onOpen: () -> Unit) {
             modifier = Modifier.fillMaxSize().padding(start = 11.dp, end = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            // 米家原生图标优先；抓不到该型号时退回自绘的类别图形
-            val icon = rememberDeviceIcon(d.model)
-            if (icon != null) {
-                Image(icon, contentDescription = null, modifier = Modifier.size(34.dp))
-            } else {
-                Canvas(Modifier.size(21.dp).padding(end = 6.dp)) {
-                    deviceGlyph(d.category, if (on) Hyper.OnAccent else acc.deep)
-                }
-            }
+            DeviceIconOrGlyph(d, if (on) Hyper.OnAccent else acc.deep, 34.dp, 21.dp)
             Spacer(Modifier.width(8.dp))
             Column(Modifier.weight(1f)) {
                 Text(
@@ -363,6 +355,28 @@ private fun DeviceCard(d: Dev, onToggle: () -> Unit, onOpen: () -> Unit) {
                 )
             }
         }
+    }
+}
+
+/**
+ * 米家原生图标优先，抓不到该型号时退回自绘的类别图形。
+ *
+ * 产品图底下要垫一层淡圆：米家的图标是**产品实拍**，深色产品（比如黑色开关面板）
+ * 贴在深色卡片上几乎看不见。米家 App 里它们是衬在浅色卡片上的，我们这边是深色主题，
+ * 所以得自己把这层衬底补回来。自绘图形不需要——它的颜色本来就是按主题选的。
+ */
+@Composable
+private fun DeviceIconOrGlyph(d: Dev, glyphColor: Color, iconSize: Dp, glyphSize: Dp) {
+    val icon = rememberDeviceIcon(d.model)
+    if (icon != null) {
+        Box(Modifier.size(iconSize), contentAlignment = Alignment.Center) {
+            Box(
+                Modifier.fillMaxSize().clip(CircleShape).background(Color.White.copy(alpha = 0.13f)),
+            )
+            Image(icon, contentDescription = null, modifier = Modifier.fillMaxSize())
+        }
+    } else {
+        Canvas(Modifier.size(glyphSize)) { deviceGlyph(d.category, glyphColor) }
     }
 }
 
@@ -470,8 +484,13 @@ private fun HeroSlider(
     onToggle: () -> Unit,
     onCommit: (Double) -> Unit,
 ) {
-    val on = dev.on == true
-    val live = dev.power != null && dev.on != null
+    // 音箱、投影仪这类设备根本没有电源属性。原来的判断把它们一律当成「关」，
+    // 结果滑块变灰**而且拖不动**——音量完全没法调。没有开关就没有关闭态，
+    // 这类设备的滑块应该始终是亮的、可拖的。
+    val hasPower = dev.power != null
+    val on = !hasPower || dev.on == true
+    val canToggle = hasPower && dev.on != null
+    val canDrag = range != null && (!hasPower || dev.on != null)
     val haptics = LocalHapticFeedback.current
     val committed = range?.let { dev.valueOf(it)?.num }
     var dragging by remember { mutableStateOf<Double?>(null) }
@@ -491,10 +510,10 @@ private fun HeroSlider(
             .height(Dim.HeroH)
             .clip(RoundedCornerShape(Dim.HeroRadius))
             .background(Hyper.SurfaceHi)
-            .pointerInput(range, live, committed) {
+            .pointerInput(range, canDrag, canToggle, committed) {
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
-                    if (!live) return@awaitEachGesture
+                    if (!canDrag && !canToggle) return@awaitEachGesture
                     val slop = viewConfiguration.touchSlop
                     val start = committed ?: range?.min ?: 0.0
                     var dy = 0f
@@ -506,7 +525,7 @@ private fun HeroSlider(
                         if (!ch.pressed) break
                         dy += ch.positionChange().y
                         if (!moved && abs(dy) > slop) moved = true
-                        if (moved && range != null) {
+                        if (moved && canDrag && range != null) {
                             ch.consume()
                             // 满高＝满量程；向上拖是加，所以取负
                             val span = range.max - range.min
@@ -514,11 +533,11 @@ private fun HeroSlider(
                             dragging = cur
                         }
                     }
-                    if (moved && range != null) {
+                    if (moved && canDrag && range != null) {
                         haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                         onCommit(cur)
                         dragging = null
-                    } else if (!moved) {
+                    } else if (!moved && canToggle) {
                         onToggle()
                     }
                 }
@@ -556,9 +575,12 @@ private fun HeroSlider(
                 maxLines = 1,
             )
             Spacer(Modifier.weight(1f))
-            // 电源符号放在滑块底部，兼作「点这块能开关」的提示——纯手势没有可发现性
-            Canvas(Modifier.size(17.dp)) {
-                powerGlyph(if (on) Hyper.OnAccent else Hyper.Muted)
+            // 电源符号放在滑块底部，兼作「点这块能开关」的提示——纯手势没有可发现性。
+            // 没有电源属性的设备不画：那会暗示一个点了没反应的开关。
+            if (canToggle) {
+                Canvas(Modifier.size(17.dp)) {
+                    powerGlyph(if (on) Hyper.OnAccent else Hyper.Muted)
+                }
             }
         }
     }

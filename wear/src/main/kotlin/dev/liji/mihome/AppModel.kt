@@ -60,6 +60,8 @@ data class Dev(
     val model: String? = null,
     /** 房间名。归属来自 gethome 的 roomlist（设备记录里没有这个字段）。 */
     val room: String? = null,
+    /** 米家记的使用次数，只用于首次启动时挑收藏。 */
+    val cnt: Int = 0,
     val controls: List<Control> = emptyList(),
     val values: Map<PropKey, DevValue> = emptyMap(),
     val busy: Boolean = false,
@@ -112,6 +114,17 @@ class AppModel(private val app: Context) {
     /** 首屏收藏的容量。三张 52dp 卡片正好在 226dp 上居中排完，零滚动。 */
     private val autoFavoriteCount = 3
 
+    /**
+     * 首次启动挑收藏时优先考虑的品类：每天顺手就按的东西。
+     *
+     * 只按米家的使用次数排会把摄像机排进前三（它 cnt=11，比桌灯的 8 高）——
+     * 摄像机能开关，但那不是抬腕会做的动作。这个偏好只影响**初始默认值**，
+     * 用户在详情页 ★ 一改就以他的选择为准。
+     */
+    private val everydayCategories = listOf(
+        "light", "switch", "outlet", "air-conditioner", "fan", "curtain", "heater", "humidifier",
+    )
+
     /** 家庭表（含房间）变化极少，一个进程生命周期内取一次就够——省掉每次刷新的一个蓝牙往返。 */
     private var homesCache: List<HomeInfo>? = null
 
@@ -130,13 +143,14 @@ class AppModel(private val app: Context) {
     private val specLang = if (java.util.Locale.getDefault().language == "zh") "zh_cn" else "en"
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
-    private val _state = MutableStateFlow(UiState())
+    // 收藏在这里就装进初始状态，不能等到 start()：调试入口（--es open/toggle）会绕过
+    // start()，那时 favIds 是空的，点一下 ★ 就把整份收藏替换成了一个设备。
+    private val _state = MutableStateFlow(UiState(favIds = loadFavorites()))
     val state: StateFlow<UiState> = _state.asStateFlow()
 
     private var loginJob: Job? = null
 
     fun start() {
-        _state.value = _state.value.copy(favIds = loadFavorites())
         if (store.loadSession() != null) {
             _state.value = _state.value.copy(screen = Screen.Devices)
             refresh()
@@ -271,6 +285,7 @@ class AppModel(private val app: Context) {
                     category = info.specType?.urnCategory(),
                     model = info.model,
                     room = rooms[info.did],
+                    cnt = info.cnt,
                     controls = controlsByType[info.specType].orEmpty(),
                 )
             }
@@ -413,10 +428,26 @@ class AppModel(private val app: Context) {
      */
     private fun seedFavorites(devs: List<Dev>) {
         if (store.get(KEY_FAV) != null) return
-        val seed = devs.filter { it.power != null }.take(autoFavoriteCount).map { it.did }
+        // 先按品类偏好，再按米家自己记的使用次数。第一版用的是设备列表的默认顺序
+        // （名字字母序），结果给我挑出了「卧室灯 + 两台摄像机」。
+        val seed = devs.filter { it.power != null }
+            .sortedWith(
+                compareBy<Dev> { everydayCategories.indexOf(it.category).takeIf { i -> i >= 0 } ?: 99 }
+                    .thenByDescending { it.cnt },
+            )
+            .take(autoFavoriteCount)
+            .map { it.did }
         store.set(KEY_FAV, seed.joinToString(","))
         _state.value = _state.value.copy(favIds = seed)
         Flog.i("首次启动，自动收藏 ${seed.size} 个可开关设备")
+    }
+
+    /** 调试用：清掉收藏，让自动挑选重新跑一次。 */
+    fun resetFavorites() {
+        store.set(KEY_FAV, null)
+        _state.value = _state.value.copy(favIds = emptyList())
+        Flog.i("收藏已清空，将重新自动挑选")
+        refresh()
     }
 
     /** 加入/移出收藏。收藏只存在表上，不回写米家。 */
