@@ -33,6 +33,31 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.Base64
 
+/**
+ * 磁贴上的读数摘要，最多两项。
+ *
+ * spec 顺序不等于重要性，所以按类别排一遍：温湿度、电功率这些是「这台设备现在怎么样」，
+ * 而 `status` 是个各家含义不同的通用字段——摄像机的 status 会显示成「不存在」
+ * （存储卡状态），对着一台正常工作的摄像机报这个只会让人以为坏了。
+ * 有开关的设备状态已经由颜色表达，就不再让 status 占这一行；
+ * 没开关的传感器则相反，燃气报警器的 status（「监测正常」）正是它存在的理由。
+ */
+private val SUMMARY_RANK = listOf(
+    "temperature", "relative-humidity", "electric-power", "occupancy-status",
+    "gas-concentration", "smoke-concentration", "illumination",
+    "download-speed", "upload-speed", "battery-level",
+)
+
+fun summaryOf(d: Dev): String? = d.readouts
+    .filterNot { d.power != null && it.cat == "status" }
+    .sortedBy { SUMMARY_RANK.indexOf(it.cat).takeIf { i -> i >= 0 } ?: 50 }
+    .take(2)
+    .mapNotNull { c -> d.valueOf(c)?.let { readoutText(c, it) } }
+    .filter { it != "—" }
+    .takeIf { it.isNotEmpty() }
+    ?.joinToString(" ")
+
+
 typealias PropKey = Pair<Int, Int>
 
 sealed interface Screen {
@@ -62,6 +87,8 @@ data class Dev(
     val room: String? = null,
     /** 米家记的使用次数，只用于首次启动时挑收藏。 */
     val cnt: Int = 0,
+    /** 快照里带回来的读数文案。真实读数没到之前先顶上，免得磁贴空着。 */
+    val snapSummary: String? = null,
     val controls: List<Control> = emptyList(),
     val values: Map<PropKey, DevValue> = emptyMap(),
     val busy: Boolean = false,
@@ -87,6 +114,9 @@ data class Dev(
     val listProps: List<Control.Prop> get() = listOfNotNull(power) + readouts.take(2)
 
     fun valueOf(c: Control.Prop): DevValue? = values[c.siid to c.piid]
+
+    /** 磁贴上那行读数。渲染和存快照共用同一份，避免两处算得不一样。 */
+    val summaryText: String? get() = summaryOf(this) ?: snapSummary
 }
 
 data class UiState(
@@ -143,15 +173,33 @@ class AppModel(private val app: Context) {
     private val specLang = if (java.util.Locale.getDefault().language == "zh") "zh_cn" else "en"
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
-    // 收藏在这里就装进初始状态，不能等到 start()：调试入口（--es open/toggle）会绕过
-    // start()，那时 favIds 是空的，点一下 ★ 就把整份收藏替换成了一个设备。
-    private val _state = MutableStateFlow(UiState(favIds = loadFavorites()))
+    /**
+     * 初始状态就带上收藏和上次的设备快照。
+     *
+     * 收藏不能等到 start()：调试入口（--es open/toggle）会绕过 start()，
+     * 那时 favIds 是空的，点一下 ★ 就把整份收藏替换成了一个设备。
+     *
+     * 快照也要在这里，而不是 start() 里：MainActivity 是先 setContent 再 start()，
+     * 快照晚一步就意味着 Compose 先合成一遍 Loading 转圈、再整体重组成设备网格——
+     * 白做一次完整合成，而首次合成正是冷启动里最贵的一段。
+     */
+    private val _state = MutableStateFlow(
+        Snapshot.load(app).let { cached ->
+            if (cached.isNotEmpty() && store.loadSession() != null) {
+                UiState(screen = Screen.Devices, devices = cached, favIds = loadFavorites())
+            } else {
+                UiState(favIds = loadFavorites())
+            }
+        },
+    )
     val state: StateFlow<UiState> = _state.asStateFlow()
 
     private var loginJob: Job? = null
 
     fun start() {
         if (store.loadSession() != null) {
+            // 快照已在初始状态里画好了（见 _state），这里只管去刷新
+            Flog.i("快照 ${_state.value.devices.size} 个设备")
             _state.value = _state.value.copy(screen = Screen.Devices)
             refresh()
         } else {
@@ -218,10 +266,20 @@ class AppModel(private val app: Context) {
 
     // ---------- 设备 ----------
 
+    /**
+     * 分两段发布：设备清单一到就画，读数随后补。
+     * 冷启动的四段请求里 prop/get 独占约 1.2 秒，没必要让名字和图标陪着一起等。
+     */
     fun refresh() {
         scope.launch {
             _state.value = _state.value.copy(busy = true, error = null)
-            runCatching { withContext(Dispatchers.IO) { loadDevices() } }
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    val devs = carryOver(buildDevices())
+                    withContext(Dispatchers.Main) { _state.value = _state.value.copy(devices = devs) }
+                    readProps(devs) { it.listProps }.also { finishLoad(it) }
+                }
+            }
                 .onSuccess { _state.value = _state.value.copy(devices = it, busy = false) }
                 .onFailure {
                     Flog.e("刷新失败", it)
@@ -264,19 +322,34 @@ class AppModel(private val app: Context) {
         }
     }
 
-    private fun loadDevices(): List<Dev> {
+    private fun loadDevices(): List<Dev> =
+        readProps(buildDevices()) { it.listProps }.also { finishLoad(it) }
+
+    /** 设备清单（不含读数）。这一段跑完就能画出磁贴，不必等 prop/get。 */
+    private fun buildDevices(): List<Dev> {
         val homes = homes()
         val rooms = homes.flatMap { it.rooms.entries }.associate { it.key to it.value }
 
         // 全部家庭都要读。一个账号有多套房产是常态（本机账号就有三个家庭），
         // 只读第一个会让另外几处的设备在 App 里完全不存在。
+        // 并发发出去：三个家庭串行要 0.9 秒，而它们之间没有任何依赖。
         val infos = Flog.timed("device_list x${homes.size}") {
-            homes.flatMap { api.devices(it.uid, it.id) }
+            if (homes.size <= 1) {
+                homes.flatMap { api.devices(it.uid, it.id) }
+            } else {
+                val pool = java.util.concurrent.Executors.newFixedThreadPool(homes.size.coerceAtMost(4))
+                try {
+                    homes.map { h -> pool.submit<List<dev.liji.mihome.core.DeviceInfo>> { api.devices(h.uid, h.id) } }
+                        .flatMap { runCatching { it.get() }.getOrDefault(emptyList()) }
+                } finally {
+                    pool.shutdown()
+                }
+            }
         }.distinctBy { it.did }
 
         val controlsByType = prefetchControls(infos.mapNotNull { it.specType }.distinct())
 
-        val devs = infos
+        return infos
             .map { info ->
                 Dev(
                     did = info.did,
@@ -291,10 +364,22 @@ class AppModel(private val app: Context) {
             }
             // 有常用控件的排前面：连电量都读不到的设备（体脂秤）沉底
             .sortedWith(compareByDescending<Dev> { it.quick.isNotEmpty() }.thenBy { it.name })
+    }
 
-        // 一次批量请求拿全部设备的列表态。二十来个设备约 50 个属性，仍是一个往返——
-        // 蓝牙链路上少一个往返就是几百毫秒，这是整个列表页能秒开的原因。
-        return readProps(devs) { it.listProps }.also { seedFavorites(it); syncTile(it) }
+    private fun finishLoad(devs: List<Dev>) {
+        seedFavorites(devs)
+        syncTile(devs)
+        Snapshot.save(app, devs)
+        // 后台把图标全解出来，之后滚动列表不会再有解码停顿
+        scope.launch { DeviceIcon.prewarm(app, devs.map { it.model }) }
+    }
+
+    /** 新一批设备沿用界面上已有的值（多半来自快照），避免刚画出来的磁贴又空一次。 */
+    private fun carryOver(fresh: List<Dev>): List<Dev> {
+        val old = _state.value.devices.associateBy { it.did }
+        return fresh.map { d ->
+            old[d.did]?.let { d.copy(values = it.values, snapSummary = it.snapSummary) } ?: d
+        }
     }
 
     /** 把最后已知状态写进缓存，Tile 靠它瞬间出图（它不能发网络请求）。 */

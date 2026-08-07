@@ -35,8 +35,9 @@ class MainActivity : ComponentActivity() {
      */
     private fun handleDebugIntent(intent: Intent?): Boolean {
         if (intent == null) return false
-
-        // 每次调试启动都记一遍当前网络，出问题时不用猜是走的哪条
+        // 只有调试入口才记网络快照。它要遍历所有网络查能力，
+        // 放在每次冷启动的主线程上纯属白付。
+        if (intent.extras?.isEmpty != false) return false
         Net.dumpNetworks(applicationContext)
 
         intent.getStringExtra("session")?.let {

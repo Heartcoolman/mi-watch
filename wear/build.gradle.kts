@@ -29,10 +29,16 @@ android {
     }
     kotlinOptions { jvmTarget = "17" }
 
-    // 只构建 debug：debug/release 混签会撞 INSTALL_FAILED_UPDATE_INCOMPATIBLE，
-    // 逼你卸载重装，而卸载会清掉已存的 passToken。
+    // 只构建 debug：混签会撞 INSTALL_FAILED_UPDATE_INCOMPATIBLE，逼你卸载重装，
+    // 而卸载会清掉已存的 passToken。
+    // 但**开 R8**：不压缩时 dex 有 33MB（Compose 运行时全量），冷启动光加载校验就要两秒。
+    // 压缩后 8.4MB。签名用的还是 debug key，装机不受影响。
     buildTypes {
-        debug { isMinifyEnabled = false }
+        debug {
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+        }
     }
 
     sourceSets["main"].java.srcDir("src/main/kotlin")

@@ -248,7 +248,7 @@ private fun DeviceTile(d: Dev, model: AppModel) {
     val live = hasPower && d.on != null
     val haptics = LocalHapticFeedback.current
     val interaction = remember { MutableInteractionSource() }
-    val summary = summaryOf(d)
+    val summary = d.summaryText
 
     val fill by animateFloatAsState(
         targetValue = if (on) 1f else 0f,
@@ -317,30 +317,6 @@ private fun DeviceTile(d: Dev, model: AppModel) {
         }
     }
 }
-
-/**
- * 磁贴上的读数摘要，最多两项。
- *
- * spec 顺序不等于重要性，所以按类别排一遍：温湿度、电功率这些是「这台设备现在怎么样」，
- * 而 `status` 是个各家含义不同的通用字段——摄像机的 status 会显示成「不存在」
- * （存储卡状态），对着一台正常工作的摄像机报这个只会让人以为坏了。
- * 有开关的设备状态已经由颜色表达，就不再让 status 占这一行；
- * 没开关的传感器则相反，燃气报警器的 status（「监测正常」）正是它存在的理由。
- */
-private val SUMMARY_RANK = listOf(
-    "temperature", "relative-humidity", "electric-power", "occupancy-status",
-    "gas-concentration", "smoke-concentration", "illumination",
-    "download-speed", "upload-speed", "battery-level",
-)
-
-private fun summaryOf(d: Dev): String? = d.readouts
-    .filterNot { d.power != null && it.cat == "status" }
-    .sortedBy { SUMMARY_RANK.indexOf(it.cat).takeIf { i -> i >= 0 } ?: 50 }
-    .take(2)
-    .mapNotNull { c -> d.valueOf(c)?.let { readoutText(c, it) } }
-    .filter { it != "—" }
-    .takeIf { it.isNotEmpty() }
-    ?.joinToString(" ")
 
 /**
  * 米家原生图标优先，抓不到该型号时退回自绘的类别图形。
@@ -739,7 +715,7 @@ private fun readoutLine(dev: Dev): String? = dev.readouts
     ?.joinToString(" · ")
 
 /** 渲染实现在 :core，CLI 的 `./mi list` 和表上走同一份代码。 */
-private fun readoutText(c: Control.Readout, v: DevValue): String =
+fun readoutText(c: Control.Readout, v: DevValue): String =
     if (!v.ok) "—" else c.render(v.num, v.bool)
 
 private fun shortLabel(s: String) = s.shortLabel()
