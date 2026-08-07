@@ -7,9 +7,14 @@ import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.addJsonObject
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
@@ -24,7 +29,31 @@ data class PropValue(
     val value: JsonElement?,
     /** 逐项状态码。参考实现从不读它，于是设备离线时会把陈旧值当真值渲染。非 0 应显示为「—」。 */
     val code: Int,
-)
+) {
+    private val prim get() = value as? JsonPrimitive
+
+    /** code 非 0 一律当无效值，不让陈旧数据看起来像可用状态。 */
+    val asBool: Boolean? get() = if (code != 0) null else prim?.booleanOrNull
+    val asInt: Int? get() = if (code != 0) null else prim?.intOrNull
+    val asDouble: Double? get() = if (code != 0) null else prim?.doubleOrNull
+    val asText: String? get() = if (code != 0) null else prim?.contentOrNull
+}
+
+/** 类型化的设备信息，好让 :wear 完全不必依赖 kotlinx-serialization。 */
+data class DeviceInfo(
+    val did: String,
+    val name: String,
+    val model: String,
+    val online: Boolean,
+    val specType: String?,
+    /** 非空表示是网关下挂的子设备。 */
+    val parentId: String?,
+) {
+    /** BLE 设备的 did 形如 blt.3.xxx，基本只读且经网关中转，v1 直接排除。 */
+    val isBle get() = did.startsWith("blt.")
+}
+
+data class HomeInfo(val id: Long, val uid: Long, val name: String)
 
 class MiApi(private val store: Store, private val auth: MiAuth, var verbose: Boolean = false) {
 
@@ -121,6 +150,37 @@ class MiApi(private val store: Store, private val auth: MiAuth, var verbose: Boo
             )
         }
     }
+
+    /** 类型化封装，:wear 只用这几个，不必接触 JSON。 */
+    fun homes(): List<HomeInfo> =
+        (getHomes()["result"]?.jsonObject?.get("homelist") as? JsonArray).orEmpty().map { e ->
+            val o = e.jsonObject
+            HomeInfo(
+                id = o["id"]!!.jsonPrimitive.content.toLong(),
+                uid = o["uid"]!!.jsonPrimitive.longOrNull ?: error("家庭缺 uid"),
+                name = o["name"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+            )
+        }
+
+    fun devices(homeOwnerUid: Long, homeId: Long): List<DeviceInfo> =
+        (getDevices(homeOwnerUid, homeId)["result"]?.jsonObject?.get("device_info") as? JsonArray)
+            .orEmpty().map { e ->
+                val o = e.jsonObject
+                DeviceInfo(
+                    did = o["did"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+                    name = o["name"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+                    model = o["model"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+                    online = o["isOnline"]?.jsonPrimitive?.booleanOrNull ?: false,
+                    specType = o["spec_type"]?.jsonPrimitive?.contentOrNull,
+                    parentId = o["parent_id"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotEmpty() },
+                )
+            }
+
+    fun setBool(did: String, siid: Int, piid: Int, value: Boolean): Boolean =
+        propSet(listOf(PropRef(did, siid, piid) to JsonPrimitive(value))).code() == 0
+
+    fun setInt(did: String, siid: Int, piid: Int, value: Int): Boolean =
+        propSet(listOf(PropRef(did, siid, piid) to JsonPrimitive(value))).code() == 0
 
     fun propSet(items: List<Pair<PropRef, JsonElement>>): JsonObject = post(
         "miotspec/prop/set",
