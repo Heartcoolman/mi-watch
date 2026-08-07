@@ -53,8 +53,10 @@ data class Dev(
     val did: String,
     val name: String,
     val online: Boolean,
-    /** spec urn 的类别段（light / air-conditioner …），UI 靠它取身份色和图标。 */
+    /** spec urn 的类别段（light / air-conditioner …），UI 靠它取身份色和自绘图形。 */
     val category: String? = null,
+    /** 产品型号，米家原生图标按它在 assets/icon 里找。 */
+    val model: String? = null,
     val controls: List<Control> = emptyList(),
     val values: Map<PropKey, DevValue> = emptyMap(),
     val busy: Boolean = false,
@@ -221,6 +223,7 @@ class AppModel(private val app: Context) {
                     name = info.name,
                     online = info.online,
                     category = info.specType?.urnCategory(),
+                    model = info.model,
                     controls = controls,
                 )
             }

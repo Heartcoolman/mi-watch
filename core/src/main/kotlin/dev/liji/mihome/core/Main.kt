@@ -46,6 +46,8 @@ fun main(args: Array<String>) {
             "spec" -> spec(rest)
             "controls-urn" -> controlsUrn(rest)
             "bundle" -> bundle(rest)
+            "icons" -> icons(rest)
+            "raw" -> raw(rest)
             "session" -> session()
             "logout" -> { store.clearSession(); println("已清除会话（deviceId 保留）") }
             else -> usage()
@@ -59,6 +61,23 @@ fun main(args: Array<String>) {
         System.err.println("✗ ${e::class.simpleName}: ${e.message}")
         kotlin.system.exitProcess(1)
     }
+}
+
+/** 把米家原生设备图标抓进 assets。见 MiIcons 里为什么这件事必须在构建期做。 */
+private fun icons(a: List<String>) {
+    require(a.isNotEmpty()) { "用法: icons <outdir> [model...]" }
+    val models = a.drop(1).ifEmpty {
+        api.devices(store.get("homeOwnerUid")!!.toLong(), store.get("homeId")!!.toLong())
+            .filter { !it.isBle }.map { it.model }
+    }
+    val n = MiIcons.fetchInto(File(a[0]), models)
+    println("\n$n/${models.distinct().size} 个图标已就位")
+}
+
+/** 原样打印任意端点的响应。类型化封装只挑走了用得上的字段，排查时需要看全貌。 */
+private fun raw(a: List<String>) {
+    require(a.isNotEmpty()) { "用法: raw <path> [jsonBody]" }
+    println(api.post(a[0], a.getOrNull(1) ?: "{}"))
 }
 
 private fun usage() = println(
@@ -77,6 +96,8 @@ private fun usage() = println(
       spec <urn>                     打印 MIoT spec 树（免登录）
       controls-urn <urn>             打印归约出的控件（免登录，调 toControls 用）
       bundle <outdir> <urn>...       把 spec 与中文翻译写进 assets，供表上首启即用
+      icons <outdir> [model...]       抓米家原生设备图标进 assets（不传 model 就取全部设备）
+      raw <path> [json]              原样打印端点响应（看类型化封装吃掉了哪些字段）
       session                        导出会话 blob（供 adb --es session 注入）
       logout                         清除会话
     环境变量 MIHOME_VERBOSE=1 打印请求与响应

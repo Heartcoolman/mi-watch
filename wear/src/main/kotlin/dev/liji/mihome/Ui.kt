@@ -242,13 +242,19 @@ private fun DeviceCard(d: Dev, onToggle: () -> Unit, onOpen: () -> Unit) {
         Box(Modifier.fillMaxSize().alpha(fill).background(acc.horizontal))
 
         Row(
-            modifier = Modifier.fillMaxSize().padding(start = 13.dp, end = 12.dp),
+            modifier = Modifier.fillMaxSize().padding(start = 11.dp, end = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Canvas(Modifier.size(21.dp)) {
-                deviceGlyph(d.category, if (on) Hyper.OnAccent else acc.deep)
+            // 米家原生图标优先；抓不到该型号时退回自绘的类别图形
+            val icon = rememberDeviceIcon(d.model)
+            if (icon != null) {
+                Image(icon, contentDescription = null, modifier = Modifier.size(34.dp))
+            } else {
+                Canvas(Modifier.size(21.dp).padding(end = 6.dp)) {
+                    deviceGlyph(d.category, if (on) Hyper.OnAccent else acc.deep)
+                }
             }
-            Spacer(Modifier.width(9.dp))
+            Spacer(Modifier.width(8.dp))
             Column(Modifier.weight(1f)) {
                 Text(
                     d.name,
