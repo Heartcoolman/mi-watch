@@ -3,11 +3,22 @@ package dev.liji.mihome
 import android.app.Activity
 import android.view.WindowManager
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -35,6 +46,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -43,12 +55,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.input.rotary.onRotaryScrollEvent
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
@@ -60,29 +75,58 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
 import androidx.wear.compose.foundation.lazy.ScalingLazyListScope
+import androidx.wear.compose.foundation.lazy.ScalingLazyListState
 import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
+import androidx.wear.compose.foundation.rotary.RotaryScrollableDefaults
+import androidx.wear.compose.material3.AppScaffold
 import androidx.wear.compose.material3.CircularProgressIndicator
 import androidx.wear.compose.material3.MaterialTheme
+import androidx.wear.compose.material3.ScreenScaffold
 import androidx.wear.compose.material3.Text
+import androidx.wear.compose.material3.TimeText
+import androidx.wear.compose.material3.TimeTextDefaults
+import androidx.wear.compose.material3.timeTextCurvedText
 import dev.liji.mihome.core.Control
 import dev.liji.mihome.core.render
 import dev.liji.mihome.core.shortLabel
 import kotlin.math.abs
 import kotlin.math.roundToInt
+import kotlinx.coroutines.delay
 
 @Composable
 fun App(model: AppModel) {
     val s by model.state.collectAsStateWithLifecycle()
     MaterialTheme {
         Box(Modifier.fillMaxSize().background(Hyper.Bg)) {
-            when (val screen = s.screen) {
-                is Screen.Loading -> Centered { CircularProgressIndicator() }
-                is Screen.Login -> LoginScreen(screen, model)
-                is Screen.Devices -> DeviceScreen(s, model)
-                is Screen.Detail -> {
-                    val dev = s.devices.firstOrNull { it.did == screen.did }
-                    if (dev == null) Centered { Text("设备不存在", color = Hyper.Muted) }
-                    else DetailScreen(dev, s, model)
+            AnimatedContent(
+                targetState = s.screen,
+                modifier = Modifier.fillMaxSize(),
+                // 按类型 key：Login 每次二维码刷新都是新实例，按实例 key 会让整屏重新转场
+                contentKey = { it::class },
+                transitionSpec = {
+                    when {
+                        // 列表→详情：从 0.9 弹开——HyperOS 控制中心的展开手感
+                        targetState is Screen.Detail -> fadeIn(tween(160)) +
+                            scaleIn(initialScale = 0.9f, animationSpec = spring(dampingRatio = 0.8f, stiffness = Spring.StiffnessMedium)) togetherWith
+                            fadeOut(tween(120))
+
+                        initialState is Screen.Detail -> fadeIn(tween(160)) togetherWith
+                            fadeOut(tween(140)) + scaleOut(targetScale = 0.92f, animationSpec = tween(160))
+
+                        else -> fadeIn(tween(220)) togetherWith fadeOut(tween(120))
+                    }
+                },
+                label = "screen",
+            ) { screen ->
+                when (screen) {
+                    is Screen.Loading -> LoadingScreen()
+                    is Screen.Login -> LoginScreen(screen, model)
+                    is Screen.Devices -> DeviceScreen(s, model)
+                    is Screen.Detail -> {
+                        val dev = s.devices.firstOrNull { it.did == screen.did }
+                        if (dev == null) Centered { Text("设备不存在", color = Hyper.Muted) }
+                        else DetailScreen(dev, s, model)
+                    }
                 }
             }
             ErrorToast(s, model)
@@ -91,8 +135,42 @@ fun App(model: AppModel) {
 }
 
 @Composable
+private fun LoadingScreen() {
+    Centered {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Canvas(Modifier.size(24.dp)) { powerGlyph(accentOf(null).light) }
+            CircularProgressIndicator(Modifier.size(22.dp))
+        }
+    }
+}
+
+@Composable
 private fun Centered(content: @Composable () -> Unit) {
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { content() }
+}
+
+/** 顶部弧形时间。压成 Muted 色——纯黑背景上默认的白色太抢。 */
+@Composable
+private fun HyperTimeText() {
+    val style = TimeTextDefaults.timeTextStyle(color = Hyper.Muted)
+    TimeText { time -> timeTextCurvedText(time, style) }
+}
+
+/**
+ * 滚动屏的三件套：顶部弧形时间（滚动时淡出）、右缘滚动指示、圆屏收口。
+ * TimeText 由 AppScaffold 承载，单独的 ScreenScaffold 不画它——实测过。
+ * 所以每个滚动屏各包一层 AppScaffold，而不是放在 App 根部：
+ * 详情页顶弧被设备名占用、登录页是二维码，都不该有时间，包在这里天然豁免。
+ * scaffold 给的内边距不收：磁贴几何按整屏调准，autoCentering 已处理首行位置。
+ */
+@Composable
+private fun ScrollScreen(listState: ScalingLazyListState, content: @Composable () -> Unit) {
+    AppScaffold(timeText = { HyperTimeText() }) {
+        ScreenScaffold(scrollState = listState) { _ -> content() }
+    }
 }
 
 // ---------- 登录 ----------
@@ -116,6 +194,7 @@ private fun LoginScreen(screen: Screen.Login, model: AppModel) {
                 verticalArrangement = Arrangement.spacedBy(14.dp),
                 modifier = Modifier.padding(horizontal = 24.dp),
             ) {
+                Canvas(Modifier.size(20.dp)) { powerGlyph(Hyper.Muted) }
                 Text(
                     screen.hint,
                     textAlign = TextAlign.Center,
@@ -169,10 +248,16 @@ private fun BrightAndAwake() {
 @Composable
 private fun DeviceScreen(state: UiState, model: AppModel) {
     val listState = rememberScalingLazyListState()
+    ScrollScreen(listState) { DeviceList(state, model, listState) }
+}
+
+@Composable
+private fun DeviceList(state: UiState, model: AppModel, listState: ScalingLazyListState) {
     ScalingLazyColumn(
         modifier = Modifier.fillMaxSize(),
         state = listState,
         horizontalAlignment = Alignment.CenterHorizontally,
+        rotaryScrollableBehavior = RotaryScrollableDefaults.behavior(listState),
     ) {
         tileRows(state.favorites, model)
 
@@ -370,12 +455,7 @@ private fun DetailScreen(dev: Dev, state: UiState, model: AppModel) {
     // 竖滑块就是个写着「关」的死灰块。这类设备改用列表式详情。
     if (hero == null && dev.power == null) {
         SensorDetail(dev, acc, faved, model) { picking = it }
-        picking?.let { c ->
-            PickerOverlay(dev, c, acc, onPick = { v ->
-                model.write(dev.did, c, DevValue(true, num = v.toDouble()))
-                picking = null
-            }, onDismiss = { picking = null })
-        }
+        PickerLayer(dev, picking, acc, model) { picking = null }
         return
     }
 
@@ -398,6 +478,8 @@ private fun DetailScreen(dev: Dev, state: UiState, model: AppModel) {
                 dev = dev,
                 range = hero,
                 accent = acc,
+                // 选择层开着时表圈事件不该落到滑块上
+                rotaryActive = picking == null,
                 onToggle = { model.toggle(dev.did) },
                 onCommit = { v -> hero?.let { model.write(dev.did, it, DevValue(true, num = v)) } },
             )
@@ -420,11 +502,30 @@ private fun DetailScreen(dev: Dev, state: UiState, model: AppModel) {
         }
     }
 
-    picking?.let { c ->
+    PickerLayer(dev, picking, acc, model) { picking = null }
+}
+
+/**
+ * 选择层的出入场。AnimatedVisibility 退场期间 picking 已是 null，
+ * 所以要记住最后一次的控件，让淡出的那帧还有内容可画。
+ */
+@Composable
+private fun PickerLayer(dev: Dev, picking: Control.Prop?, acc: Accent, model: AppModel, onClose: () -> Unit) {
+    var last by remember { mutableStateOf<Control.Prop?>(null) }
+    if (picking != null) last = picking
+    AnimatedVisibility(
+        visible = picking != null,
+        enter = fadeIn(tween(160)) + slideInVertically(
+            initialOffsetY = { it / 7 },
+            animationSpec = spring(dampingRatio = 0.8f, stiffness = Spring.StiffnessMediumLow),
+        ),
+        exit = fadeOut(tween(120)) + slideOutVertically(targetOffsetY = { it / 9 }, animationSpec = tween(140)),
+    ) {
+        val c = picking ?: last ?: return@AnimatedVisibility
         PickerOverlay(dev, c, acc, onPick = { v ->
             model.write(dev.did, c, DevValue(true, num = v.toDouble()))
-            picking = null
-        }, onDismiss = { picking = null })
+            onClose()
+        }, onDismiss = onClose)
     }
 }
 
@@ -443,6 +544,7 @@ private fun HeroSlider(
     dev: Dev,
     range: Control.Range?,
     accent: Accent,
+    rotaryActive: Boolean = true,
     onToggle: () -> Unit,
     onCommit: (Double) -> Unit,
 ) {
@@ -458,6 +560,24 @@ private fun HeroSlider(
     var dragging by remember { mutableStateOf<Double?>(null) }
     val shown = dragging ?: committed
 
+    // 表圈调值。旋转不像拖动有「松手」，所以停转 400ms 后才提交一次——
+    // 每个事件都发 prop/set 会把蓝牙链路打满。rotaryGen 每转一格加一，
+    // LaunchedEffect 随之重启，天然就是防抖；触摸落下把它清零，等于取消未提交的旋转。
+    val focus = remember { FocusRequester() }
+    var rotaryGen by remember { mutableStateOf(0) }
+    LaunchedEffect(rotaryActive, canDrag) {
+        if (rotaryActive && canDrag) focus.requestFocus()
+    }
+    LaunchedEffect(rotaryGen) {
+        if (rotaryGen == 0) return@LaunchedEffect
+        delay(400)
+        dragging?.let {
+            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+            onCommit(it)
+        }
+        dragging = null
+    }
+
     val target = if (range != null && shown != null) {
         ((shown - range.min) / (range.max - range.min)).toFloat().coerceIn(0f, 1f)
     } else if (on) 1f else 0f
@@ -472,12 +592,28 @@ private fun HeroSlider(
             .height(Dim.HeroH)
             .clip(RoundedCornerShape(Dim.HeroRadius))
             .background(Hyper.SurfaceHi)
+            .onRotaryScrollEvent { ev ->
+                val r = range
+                if (!canDrag || r == null || !rotaryActive) return@onRotaryScrollEvent false
+                val span = r.max - r.min
+                // 顺时针＝正值＝加；一整屏高的滚动量走完全量程，和触摸拖动同一比例
+                val next = r.stepped((dragging ?: committed ?: r.min) + (ev.verticalScrollPixels / 480f) * span)
+                if (next != dragging) {
+                    dragging = next
+                    haptics.performHapticFeedback(HapticFeedbackType.SegmentFrequentTick)
+                }
+                rotaryGen++
+                true
+            }
+            .focusRequester(focus)
+            .focusable()
             .pointerInput(range, canDrag, canToggle, committed) {
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
                     if (!canDrag && !canToggle) return@awaitEachGesture
+                    rotaryGen = 0
+                    val start = dragging ?: committed ?: range?.min ?: 0.0
                     val slop = viewConfiguration.touchSlop
-                    val start = committed ?: range?.min ?: 0.0
                     var dy = 0f
                     var moved = false
                     var cur = start
@@ -536,6 +672,15 @@ private fun HeroSlider(
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 1,
             )
+            // 裸数字第一次看不知道是什么量，压一行属性名；仍在顶部暗渐变的覆盖范围内
+            if (range != null) {
+                Text(
+                    shortLabel(range.label),
+                    color = Color.White.copy(alpha = 0.55f),
+                    fontSize = 9.sp,
+                    maxLines = 1,
+                )
+            }
             Spacer(Modifier.weight(1f))
             // 电源符号放在滑块底部，兼作「点这块能开关」的提示——纯手势没有可发现性。
             // 没有电源属性的设备不画：那会暗示一个点了没反应的开关。
@@ -629,60 +774,63 @@ private fun FavChip(faved: Boolean, acc: Accent, onClick: () -> Unit) {
 @Composable
 private fun SensorDetail(dev: Dev, acc: Accent, faved: Boolean, model: AppModel, onPick: (Control.Prop) -> Unit) {
     val listState = rememberScalingLazyListState()
-    ScalingLazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        state = listState,
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        item {
-            Text(dev.name, color = Hyper.Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        }
-        val labels = dev.readouts.map { shortLabel(it.label) }
-        items(dev.readouts.size) { i ->
-            val c = dev.readouts[i]
-            // 门锁有两个「电池电量」（门锁本体 + 猫眼），去掉服务前缀后会撞名，撞了就用全名
-            val label = if (labels.count { it == labels[i] } > 1) c.label else labels[i]
-            ReadoutRow(label, dev.valueOf(c)?.let { readoutText(c, it) } ?: "—", acc)
-        }
-        if (dev.readouts.isEmpty()) {
-            item { Text("这个设备没有可读的属性", color = Hyper.Muted, fontSize = 12.sp) }
-        }
+    ScrollScreen(listState) {
+        ScalingLazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            state = listState,
+            horizontalAlignment = Alignment.CenterHorizontally,
+            rotaryScrollableBehavior = RotaryScrollableDefaults.behavior(listState),
+        ) {
+            item {
+                Text(dev.name, color = Hyper.Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            val labels = dev.readouts.map { shortLabel(it.label) }
+            items(dev.readouts.size) { i ->
+                val c = dev.readouts[i]
+                // 门锁有两个「电池电量」（门锁本体 + 猫眼），去掉服务前缀后会撞名，撞了就用全名
+                val label = if (labels.count { it == labels[i] } > 1) c.label else labels[i]
+                ReadoutRow(label, dev.valueOf(c)?.let { readoutText(c, it) } ?: "—", acc)
+            }
+            if (dev.readouts.isEmpty()) {
+                item { Text("这个设备没有可读的属性", color = Hyper.Muted, fontSize = 12.sp) }
+            }
 
-        // 少数设备只读量之外还挂着零星可写项（天然气报警器的「远程消音」），一并摆出来
-        val writables = dev.quick.filter { it !is Control.Readout }
-        items(writables.size) { i ->
-            when (val c = writables[i]) {
-                is Control.Toggle -> {
-                    val v = dev.valueOf(c)?.bool == true
-                    Pill(
-                        text = "${shortLabel(c.label)} ${if (v) "开" else "关"}",
-                        accent = acc, filled = v,
-                        onClick = { model.write(dev.did, c, DevValue(true, bool = !v)) },
+            // 少数设备只读量之外还挂着零星可写项（天然气报警器的「远程消音」），一并摆出来
+            val writables = dev.quick.filter { it !is Control.Readout }
+            items(writables.size) { i ->
+                when (val c = writables[i]) {
+                    is Control.Toggle -> {
+                        val v = dev.valueOf(c)?.bool == true
+                        Pill(
+                            text = "${shortLabel(c.label)} ${if (v) "开" else "关"}",
+                            accent = acc, filled = v,
+                            onClick = { model.write(dev.did, c, DevValue(true, bool = !v)) },
+                            modifier = Modifier.padding(horizontal = 26.dp).fillMaxWidth(),
+                        )
+                    }
+                    is Control.Act -> Pill(
+                        text = "▸ ${shortLabel(c.label)}",
+                        accent = acc, filled = false,
+                        onClick = { model.invoke(dev.did, c) },
+                        modifier = Modifier.padding(horizontal = 26.dp).fillMaxWidth(),
+                    )
+
+                    is Control.Prop -> Pill(
+                        text = shortLabel(c.label),
+                        accent = acc, filled = false,
+                        onClick = { onPick(c) },
                         modifier = Modifier.padding(horizontal = 26.dp).fillMaxWidth(),
                     )
                 }
-                is Control.Act -> Pill(
-                    text = "▸ ${shortLabel(c.label)}",
-                    accent = acc, filled = false,
-                    onClick = { model.invoke(dev.did, c) },
-                    modifier = Modifier.padding(horizontal = 26.dp).fillMaxWidth(),
-                )
-
-                is Control.Prop -> Pill(
-                    text = shortLabel(c.label),
-                    accent = acc, filled = false,
-                    onClick = { onPick(c) },
-                    modifier = Modifier.padding(horizontal = 26.dp).fillMaxWidth(),
+            }
+            item {
+                Pill(
+                    text = if (faved) "★ 已收藏" else "☆ 收藏",
+                    accent = acc, filled = faved,
+                    onClick = { model.toggleFavorite(dev.did) },
+                    modifier = Modifier.padding(horizontal = 30.dp).fillMaxWidth(),
                 )
             }
-        }
-        item {
-            Pill(
-                text = if (faved) "★ 已收藏" else "☆ 收藏",
-                accent = acc, filled = faved,
-                onClick = { model.toggleFavorite(dev.did) },
-                modifier = Modifier.padding(horizontal = 30.dp).fillMaxWidth(),
-            )
         }
     }
 }
@@ -798,27 +946,30 @@ private fun PickerOverlay(
                 onClick = onDismiss,
             ),
     ) {
-        ScalingLazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            state = listState,
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            item {
-                Text(
-                    shortLabel(c.label),
-                    color = Hyper.Muted, fontSize = 12.sp,
-                    modifier = Modifier.padding(bottom = 2.dp),
-                )
-            }
-            items(options.size) { i ->
-                val (value, text) = options[i]
-                Pill(
-                    text = text,
-                    accent = acc,
-                    filled = cur == value,
-                    onClick = { onPick(value) },
-                    modifier = Modifier.padding(horizontal = 24.dp).fillMaxWidth(),
-                )
+        ScrollScreen(listState) {
+            ScalingLazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                state = listState,
+                horizontalAlignment = Alignment.CenterHorizontally,
+                rotaryScrollableBehavior = RotaryScrollableDefaults.behavior(listState),
+            ) {
+                item {
+                    Text(
+                        shortLabel(c.label),
+                        color = Hyper.Muted, fontSize = 12.sp,
+                        modifier = Modifier.padding(bottom = 2.dp),
+                    )
+                }
+                items(options.size) { i ->
+                    val (value, text) = options[i]
+                    Pill(
+                        text = text,
+                        accent = acc,
+                        filled = cur == value,
+                        onClick = { onPick(value) },
+                        modifier = Modifier.padding(horizontal = 24.dp).fillMaxWidth(),
+                    )
+                }
             }
         }
     }
@@ -861,24 +1012,36 @@ private fun Pill(
 /** 错误浮在底部，点掉即可，不占用布局位置——否则一次报错会把三张卡片挤下去。 */
 @Composable
 private fun BoxScope.ErrorToast(state: UiState, model: AppModel) {
-    val err = state.error ?: return
-    Box(
-        Modifier
-            .align(Alignment.BottomCenter)
-            .padding(horizontal = 30.dp, vertical = 12.dp)
-            .clip(RoundedCornerShape(18.dp))
-            .background(Hyper.Danger.copy(alpha = 0.16f))
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-                onClick = { model.dismissError() },
-            )
-            .padding(horizontal = 12.dp, vertical = 7.dp),
+    val err = state.error
+    // 退场动画期间 error 已被清掉，记住最后一条给淡出的那几帧用
+    var last by remember { mutableStateOf("") }
+    if (err != null) last = err
+    AnimatedVisibility(
+        visible = err != null,
+        modifier = Modifier.align(Alignment.BottomCenter),
+        enter = fadeIn(tween(160)) + slideInVertically(
+            initialOffsetY = { it },
+            animationSpec = spring(dampingRatio = 0.8f, stiffness = Spring.StiffnessMediumLow),
+        ),
+        exit = fadeOut(tween(140)) + slideOutVertically(targetOffsetY = { it }, animationSpec = tween(160)),
     ) {
-        Text(
-            err, color = Hyper.Danger, fontSize = 11.sp,
-            maxLines = 2, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
-        )
+        Box(
+            Modifier
+                .padding(horizontal = 30.dp, vertical = 12.dp)
+                .clip(RoundedCornerShape(18.dp))
+                .background(Hyper.Danger.copy(alpha = 0.16f))
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = { model.dismissError() },
+                )
+                .padding(horizontal = 12.dp, vertical = 7.dp),
+        ) {
+            Text(
+                err ?: last, color = Hyper.Danger, fontSize = 11.sp,
+                maxLines = 2, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
+            )
+        }
     }
 }
 
