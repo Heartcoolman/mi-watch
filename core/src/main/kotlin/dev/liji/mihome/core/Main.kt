@@ -46,6 +46,7 @@ fun main(args: Array<String>) {
             "spec" -> spec(rest)
             "controls-urn" -> controlsUrn(rest)
             "bundle" -> bundle(rest)
+            "list" -> list()
             "icons" -> icons(rest)
             "raw" -> raw(rest)
             "session" -> session()
@@ -63,12 +64,63 @@ fun main(args: Array<String>) {
     }
 }
 
+/**
+ * 把表上列表页会显示的内容原样在终端跑一遍。
+ *
+ * 这是整个项目的核心手法：刷一次机要经 NAS、等表醒着，一轮十几分钟；
+ * 而这条命令走的是**和表上完全相同的代码路径**（同一份 toControls、同一份 render），
+ * 秒级就能看出「21 个设备各自会显示成什么」。渲染函数放在 :core 就是为了这件事。
+ */
+private fun list() {
+    val uid = store.get("homeOwnerUid")!!.toLong()
+    val homeId = store.get("homeId")!!.toLong()
+    val rooms = api.rooms()
+    val specs = SpecClient(File("wear/src/main/assets/spec"))
+
+    val devs = api.devices(uid, homeId).map { info ->
+        val controls = info.specType?.let { t ->
+            runCatching { specs.spec(t).toControls(specs.translations(t)) }.getOrNull()
+        }.orEmpty()
+        Triple(info, rooms[info.did] ?: "未分组", controls)
+    }.sortedWith(compareByDescending<Triple<DeviceInfo, String, List<Control>>> {
+        it.third.any { c -> c.quick }
+    }.thenBy { it.first.name })
+
+    // 和表上一样：电源 + 前两个只读量，一次批量请求
+    val refs = devs.flatMap { (info, _, cs) ->
+        val q = cs.filter { it.quick }
+        val power = q.filterIsInstance<Control.Toggle>().firstOrNull { it.isPower }
+        val ro = q.filterIsInstance<Control.Readout>().take(2)
+        (listOfNotNull(power) + ro).map { PropRef(info.did, it.siid, it.piid) }
+    }
+    val got = api.propGet(refs).associateBy { Triple(it.did, it.siid, it.piid) }
+    println("一次 prop/get 读了 ${refs.size} 个属性\n")
+
+    devs.groupBy { it.second }.toList().sortedByDescending { it.second.size }.forEach { (room, list) ->
+        println("── $room  ${list.size} ──")
+        list.forEach { (info, _, cs) ->
+            val q = cs.filter { it.quick }
+            val power = q.filterIsInstance<Control.Toggle>().firstOrNull { it.isPower }
+            val state = power?.let {
+                when (got[Triple(info.did, it.siid, it.piid)]?.asBool) {
+                    true -> "● 开"; false -> "○ 关"; null -> "  离线"
+                }
+            } ?: q.filterIsInstance<Control.Readout>().take(2).mapNotNull { c ->
+                val v = got[Triple(info.did, c.siid, c.piid)] ?: return@mapNotNull null
+                if (v.code != 0) null else c.render(v.asDouble, v.asBool).takeIf { it != "—" }
+            }.joinToString(" ").ifEmpty { "—" }
+            val kinds = q.filter { it !is Control.Readout }.size
+            println("  %-6s %-22s %s".format(state, info.name.take(11), "可控 $kinds / 读数 ${q.size - kinds}"))
+        }
+    }
+}
+
 /** 把米家原生设备图标抓进 assets。见 MiIcons 里为什么这件事必须在构建期做。 */
 private fun icons(a: List<String>) {
     require(a.isNotEmpty()) { "用法: icons <outdir> [model...]" }
     val models = a.drop(1).ifEmpty {
         api.devices(store.get("homeOwnerUid")!!.toLong(), store.get("homeId")!!.toLong())
-            .filter { !it.isBle }.map { it.model }
+            .map { it.model }
     }
     val n = MiIcons.fetchInto(File(a[0]), models)
     println("\n$n/${models.distinct().size} 个图标已就位")
@@ -96,6 +148,7 @@ private fun usage() = println(
       spec <urn>                     打印 MIoT spec 树（免登录）
       controls-urn <urn>             打印归约出的控件（免登录，调 toControls 用）
       bundle <outdir> <urn>...       把 spec 与中文翻译写进 assets，供表上首启即用
+      list                           在 Mac 上跑一遍表上列表页会显示的内容
       icons <outdir> [model...]       抓米家原生设备图标进 assets（不传 model 就取全部设备）
       raw <path> [json]              原样打印端点响应（看类型化封装吃掉了哪些字段）
       session                        导出会话 blob（供 adb --es session 注入）

@@ -57,6 +57,8 @@ data class Dev(
     val category: String? = null,
     /** 产品型号，米家原生图标按它在 assets/icon 里找。 */
     val model: String? = null,
+    /** 房间名。归属来自 gethome 的 roomlist（设备记录里没有这个字段）。 */
+    val room: String? = null,
     val controls: List<Control> = emptyList(),
     val values: Map<PropKey, DevValue> = emptyMap(),
     val busy: Boolean = false,
@@ -69,20 +71,46 @@ data class Dev(
     /** 表上默认只显示这些；其余是配置项，留给手机端。 */
     val quick: List<Control> get() = controls.filter { it.quick }
 
+    /** 只读设备（温湿度计、人体存在、燃气…）：没有任何可写的常用控件。 */
+    val readOnly: Boolean get() = quick.none { it !is Control.Readout }
+
+    val readouts: List<Control.Readout> get() = quick.filterIsInstance<Control.Readout>()
+
+    /**
+     * 列表页要读的属性：电源 + 前两个只读量。
+     * 只读量是传感器卡片的全部意义（「25.9° 45%」），电源是可控设备的全部意义，
+     * 两者合起来一次 prop/get 就够渲染整个列表。
+     */
+    val listProps: List<Control> get() = listOfNotNull(power) + readouts.take(2)
+
     fun valueOf(c: Control): DevValue? = values[c.siid to c.piid]
 }
 
 data class UiState(
     val screen: Screen = Screen.Loading,
     val devices: List<Dev> = emptyList(),
+    /** 收藏的 did，有序。第一屏就是它们，零滚动。 */
+    val favIds: List<String> = emptyList(),
     val error: String? = null,
     val busy: Boolean = false,
-)
+) {
+    val favorites: List<Dev> get() = favIds.mapNotNull { id -> devices.firstOrNull { it.did == id } }
+
+    /** 非收藏设备按房间分组，房间顺序按设备数降序——设备多的房间更可能是你要找的。 */
+    val byRoom: List<Pair<String, List<Dev>>>
+        get() = devices.filter { it.did !in favIds }
+            .groupBy { it.room ?: "未分组" }
+            .toList()
+            .sortedByDescending { it.second.size }
+}
 
 class AppModel(private val app: Context) {
 
-    /** v1 只做这三个：卧室灯、桌灯、空调。改这一行就能扩。 */
-    private val pinned = listOf("889297205", "899794381", "495582022")
+    /** 首次启动时的收藏，之后以用户在详情页 ★ 的选择为准。 */
+    private val defaultFavorites = listOf("889297205", "899794381", "495582022")
+
+    /** 房间表变化极少，一个进程生命周期内取一次就够——省掉每次刷新的一个蓝牙往返。 */
+    private var roomMap: Map<String, String>? = null
 
     private val store = AndroidStore(app)
     private val api = MiApi(store, MiAuth(store))
@@ -95,6 +123,7 @@ class AppModel(private val app: Context) {
     private var loginJob: Job? = null
 
     fun start() {
+        _state.value = _state.value.copy(favIds = loadFavorites())
         if (store.loadSession() != null) {
             _state.value = _state.value.copy(screen = Screen.Devices)
             refresh()
@@ -107,7 +136,7 @@ class AppModel(private val app: Context) {
 
     fun beginQrLogin() {
         loginJob?.cancel()
-        _state.value = UiState(screen = Screen.Login(null, "正在生成二维码…"))
+        _state.value = UiState(screen = Screen.Login(null, "正在生成二维码…"), favIds = loadFavorites())
         loginJob = scope.launch {
             runCatching {
                 withContext(Dispatchers.IO) {
@@ -125,12 +154,12 @@ class AppModel(private val app: Context) {
                 }
             }.onSuccess {
                 Flog.i("登录成功 userId=${it.userId}")
-                _state.value = UiState(screen = Screen.Devices)
+                _state.value = UiState(screen = Screen.Devices, favIds = loadFavorites())
                 refresh()
             }.onFailure { e ->
                 Flog.e("登录失败", e)
                 val hint = if (e is MiQrExpiredException) "二维码已过期，点这里重来" else "登录失败：${e.message}"
-                _state.value = UiState(screen = Screen.Login(null, hint))
+                _state.value = UiState(screen = Screen.Login(null, hint), favIds = loadFavorites())
             }
         }
     }
@@ -144,7 +173,7 @@ class AppModel(private val app: Context) {
         require(f.size == 6) { "字段数不对: ${f.size}" }
         store.saveSession(Session(f[0], f[1], f[2], f[3], f[4], f[5]))
         Flog.i("会话已注入 userId=${f[0]}")
-        _state.value = UiState(screen = Screen.Devices)
+        _state.value = UiState(screen = Screen.Devices, favIds = loadFavorites())
         refresh()
         true
     }.onFailure { Flog.e("会话注入失败", it) }.getOrDefault(false)
@@ -210,8 +239,9 @@ class AppModel(private val app: Context) {
 
     private fun loadDevices(): List<Dev> {
         val (uid, homeId) = homeIds()
+        val rooms = roomMap ?: Flog.timed("gethome/rooms") { api.rooms() }.also { roomMap = it }
+
         val devs = Flog.timed("device_list") { api.devices(uid, homeId) }
-            .filter { it.did in pinned && !it.isBle }
             .map { info ->
                 val controls = info.specType?.let { t ->
                     runCatching { controlsOf(specs.spec(t)) }
@@ -224,22 +254,28 @@ class AppModel(private val app: Context) {
                     online = info.online,
                     category = info.specType?.urnCategory(),
                     model = info.model,
+                    room = rooms[info.did],
                     controls = controls,
                 )
             }
-            .sortedBy { pinned.indexOf(it.did) }
+            // 有常用控件的排前面：连电量都读不到的设备（体脂秤）沉底
+            .sortedWith(compareByDescending<Dev> { it.quick.isNotEmpty() }.thenBy { it.name })
 
-        // 列表页只读开关：一次批量请求拿全部，蓝牙链路上少一个往返就是几百毫秒
-        return readProps(devs) { listOfNotNull(it.power) }.also { syncTile(it) }
+        // 一次批量请求拿全部设备的列表态。21 个设备约 50 个属性，仍是一个往返——
+        // 蓝牙链路上少一个往返就是几百毫秒，这是整个列表页能秒开的原因。
+        return readProps(devs) { it.listProps }.also { syncTile(it) }
     }
 
     /** 把最后已知状态写进缓存，Tile 靠它瞬间出图（它不能发网络请求）。 */
     private fun syncTile(devs: List<Dev>) {
+        val fav = _state.value.favIds
         TileState.save(
             app,
-            devs.mapNotNull { d ->
-                d.power?.let { TileState.Item(d.did, d.name, d.on, it.siid, it.piid, d.category) }
-            },
+            // Tile 只放收藏里可开关的那几个——它一屏就三格，放传感器等于浪费
+            fav.mapNotNull { id -> devs.firstOrNull { it.did == id } }
+                .mapNotNull { d ->
+                    d.power?.let { TileState.Item(d.did, d.name, d.on, it.siid, it.piid, d.category) }
+                },
         )
         MiTileService.requestUpdate(app)
     }
@@ -326,9 +362,21 @@ class AppModel(private val app: Context) {
         }
     }
 
+    private fun loadFavorites(): List<String> =
+        store.get(KEY_FAV)?.split(",")?.filter { it.isNotBlank() } ?: defaultFavorites
+
+    /** 加入/移出收藏。收藏只存在表上，不回写米家。 */
+    fun toggleFavorite(did: String) {
+        val cur = _state.value.favIds
+        val next = if (did in cur) cur - did else cur + did
+        store.set(KEY_FAV, next.joinToString(","))
+        _state.value = _state.value.copy(favIds = next)
+        syncTile(_state.value.devices)
+    }
+
     fun signOut() {
         store.clearSession()
-        _state.value = UiState()
+        _state.value = UiState(favIds = loadFavorites())
         beginQrLogin()
     }
 
@@ -356,6 +404,10 @@ class AppModel(private val app: Context) {
                 )
             },
         )
+    }
+
+    private companion object {
+        const val KEY_FAV = "favorites"
     }
 
     private fun homeIds(): Pair<Long, Long> {

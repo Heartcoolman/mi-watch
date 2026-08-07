@@ -62,6 +62,8 @@ import androidx.wear.compose.material3.CircularProgressIndicator
 import androidx.wear.compose.material3.MaterialTheme
 import androidx.wear.compose.material3.Text
 import dev.liji.mihome.core.Control
+import dev.liji.mihome.core.render
+import dev.liji.mihome.core.shortLabel
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -77,7 +79,7 @@ fun App(model: AppModel) {
                 is Screen.Detail -> {
                     val dev = s.devices.firstOrNull { it.did == screen.did }
                     if (dev == null) Centered { Text("设备不存在", color = Hyper.Muted) }
-                    else DetailScreen(dev, model)
+                    else DetailScreen(dev, s, model)
                 }
             }
             ErrorToast(s, model)
@@ -153,8 +155,11 @@ private fun BrightAndAwake() {
 // ---------- 设备列表 ----------
 
 /**
- * 三张卡片在 226dp 上居中排布，静止时零滚动——「抬腕就能按」是这一页的全部目的。
- * 刷新/退出登录挤在下方，滚一下才露出来：它们一天用不到一次，不该占用最好的位置。
+ * 收藏置顶，零滚动；往下才是按房间分组的全部设备。
+ *
+ * v1 只有三个设备，一屏排完就够了。v2 有 21 个，如果平铺，「抬腕开灯」就要先滚动找灯——
+ * 这正是 v1 花力气解决掉的问题。所以把它拆成两段：第一屏永远是你自己选的常用设备，
+ * 位置固定、零滚动；全部设备排在下面，按房间分组，设备多的房间靠前。
  */
 @Composable
 private fun DeviceScreen(state: UiState, model: AppModel) {
@@ -163,35 +168,109 @@ private fun DeviceScreen(state: UiState, model: AppModel) {
         modifier = Modifier.fillMaxSize().verticalScroll(scroll),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        // 静止时让卡片组正好居中：(226 − 3×52 − 2×8) / 2
-        Spacer(Modifier.height(27.dp))
+        val favs = state.favorites
+        // 让收藏那一组正好落在屏幕中间：(226 − n×52 − (n−1)×8) / 2，最少留 14dp
+        val top = ((226 - favs.size * 52 - (favs.size - 1).coerceAtLeast(0) * 8) / 2).coerceIn(14, 60)
+        Spacer(Modifier.height(top.dp))
 
-        state.devices.forEachIndexed { i, d ->
+        favs.forEachIndexed { i, d ->
             if (i > 0) Spacer(Modifier.height(Dim.CardGap))
-            DeviceCard(d, onToggle = { model.toggle(d.did) }, onOpen = { model.open(d.did) })
+            DeviceRow(d, model)
         }
 
         if (state.devices.isEmpty()) {
-            Text(
-                if (state.busy) "载入中…" else "没有设备",
-                color = Hyper.Muted,
-                fontSize = 14.sp,
-            )
+            Text(if (state.busy) "载入中…" else "没有设备", color = Hyper.Muted, fontSize = 14.sp)
         }
 
-        Spacer(Modifier.height(20.dp))
+        state.byRoom.forEach { (room, devs) ->
+            SectionHeader(room, devs.size)
+            devs.forEachIndexed { i, d ->
+                if (i > 0) Spacer(Modifier.height(Dim.CardGap))
+                DeviceRow(d, model)
+            }
+        }
+
+        Spacer(Modifier.height(18.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Pill(
                 text = if (state.busy) "刷新中" else "刷新",
-                accent = accentOf(null),
-                filled = false,
-                onClick = { model.refresh() },
+                accent = accentOf(null), filled = false, onClick = { model.refresh() },
             )
             Pill(text = "退出", accent = accentOf(null), filled = false, onClick = { model.signOut() })
         }
-        Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(14.dp))
     }
 }
+
+@Composable
+private fun SectionHeader(title: String, count: Int) {
+    Spacer(Modifier.height(16.dp))
+    Text(
+        "$title  $count",
+        color = Hyper.Muted,
+        fontSize = 11.sp,
+        modifier = Modifier.padding(bottom = 8.dp),
+    )
+}
+
+/** 可开关的走磁贴，纯传感器走紧凑读数行——后者一屏能多放一个。 */
+@Composable
+private fun DeviceRow(d: Dev, model: AppModel) {
+    if (d.power != null) DeviceCard(d, onToggle = { model.toggle(d.did) }, onOpen = { model.open(d.did) })
+    else SensorCard(d, onOpen = { model.open(d.did) })
+}
+
+/**
+ * 没有电源开关的设备：温湿度计、人体存在、路由器、门锁、体脂秤。
+ * 它们点了也没什么可切的，所以整行点击＝进详情，右侧直接把读数摆出来——
+ * 传感器的全部价值就是那个数字，让它在列表页就可见，等于省掉一次进出。
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun SensorCard(d: Dev, onOpen: () -> Unit) {
+    val acc = accentOf(d.category)
+    val interaction = remember { MutableInteractionSource() }
+    val summary = summaryOf(d)
+
+    Box(
+        modifier = Modifier
+            .padding(horizontal = Dim.CardPad)
+            .fillMaxWidth()
+            .height(44.dp)
+            .pressScale(interaction)
+            .clip(RoundedCornerShape(22.dp))
+            .background(Hyper.Surface)
+            .combinedClickable(
+                interactionSource = interaction, indication = null,
+                onClick = onOpen, onLongClick = onOpen,
+            ),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxSize().padding(start = 9.dp, end = 11.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            val icon = rememberDeviceIcon(d.model)
+            if (icon != null) Image(icon, contentDescription = null, modifier = Modifier.size(28.dp))
+            else Canvas(Modifier.size(18.dp)) { deviceGlyph(d.category, acc.deep) }
+            Spacer(Modifier.width(7.dp))
+            Text(
+                d.name, color = Hyper.OnSurface, fontSize = 12.sp,
+                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
+            )
+            if (summary != null) {
+                Spacer(Modifier.width(5.dp))
+                Text(summary, color = acc.light, fontSize = 12.sp, fontWeight = FontWeight.Medium, maxLines = 1)
+            }
+        }
+    }
+}
+
+/** 列表页的读数摘要：取前两个只读量。温湿度计＝「25.9° 45%」。 */
+private fun summaryOf(d: Dev): String? = d.readouts.take(2)
+    .mapNotNull { c -> d.valueOf(c)?.let { readoutText(c, it) } }
+    .filter { it != "—" }
+    .takeIf { it.isNotEmpty() }
+    ?.joinToString(" ")
 
 /**
  * HyperOS 控制中心的磁贴：开启态整块被身份色渐变填满，关闭态退回深灰。
@@ -295,12 +374,26 @@ private fun offlineNote(d: Dev): String? = when {
  * 模式一天换不了一次，收进 chip 后面完全不亏。
  */
 @Composable
-private fun DetailScreen(dev: Dev, model: AppModel) {
+private fun DetailScreen(dev: Dev, state: UiState, model: AppModel) {
     val acc = accentOf(dev.category)
     val hero = heroRange(dev)
     var picking by remember { mutableStateOf<Control?>(null) }
+    val faved = dev.did in state.favIds
 
     BackHandler { if (picking != null) picking = null else model.back() }
+
+    // 既没有可拖的量也没有开关时（温湿度计、路由器、天然气报警器…），
+    // 竖滑块就是个写着「关」的死灰块。这类设备改用列表式详情。
+    if (hero == null && dev.power == null) {
+        SensorDetail(dev, acc, faved, model) { picking = it }
+        picking?.let { c ->
+            PickerOverlay(dev, c, acc, onPick = { v ->
+                model.write(dev.did, c, DevValue(true, num = v.toDouble()))
+                picking = null
+            }, onDismiss = { picking = null })
+        }
+        return
+    }
 
     Box(Modifier.fillMaxSize()) {
         Text(
@@ -325,7 +418,7 @@ private fun DetailScreen(dev: Dev, model: AppModel) {
                 onCommit = { v -> hero?.let { model.write(dev.did, it, DevValue(true, num = v)) } },
             )
             Spacer(Modifier.width(Dim.ColGap))
-            SideColumn(dev, acc, hero, model) { picking = it }
+            SideColumn(dev, acc, hero, faved, model) { picking = it }
         }
 
         // 只读量走底部状态行而不是右列 chip：它们点不动，不该跟模式/风速抢那三个可见槽位。
@@ -463,8 +556,7 @@ private fun HeroSlider(
     }
 }
 
-private fun heroText(v: Double, c: Control.Range): String =
-    trimNum(v) + (c.unit?.let { shortUnit(it) } ?: "")
+private fun heroText(v: Double, c: Control.Range): String = c.render(v)
 
 /**
  * 右列：模式/风速这类「选一个」的属性各占一个 chip，点开才弹选择层。
@@ -475,6 +567,7 @@ private fun SideColumn(
     dev: Dev,
     acc: Accent,
     hero: Control.Range?,
+    faved: Boolean,
     model: AppModel,
     onPick: (Control) -> Unit,
 ) {
@@ -513,30 +606,113 @@ private fun SideColumn(
                 is Control.Readout -> Unit // 见 readoutLine()
             }
         }
+        FavChip(faved, acc) { model.toggleFavorite(dev.did) }
+    }
+}
+
+/** 收藏开关。排在右列最后——加/取消收藏一年也做不了几次。 */
+@Composable
+private fun FavChip(faved: Boolean, acc: Accent, onClick: () -> Unit) {
+    Chip(
+        label = "收藏",
+        value = if (faved) "★" else "☆",
+        accent = acc,
+        active = faved,
+        onClick = onClick,
+    )
+}
+
+/**
+ * 只读设备的详情：温湿度计、人体存在、路由器、门锁、体脂秤。
+ * 没有可写属性，所以整页就是一列读数——把 spec 里所有能读的都摆出来，
+ * 比列表页那两个摘要值多。
+ */
+@Composable
+private fun SensorDetail(dev: Dev, acc: Accent, faved: Boolean, model: AppModel, onPick: (Control) -> Unit) {
+    val listState = rememberScalingLazyListState()
+    ScalingLazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        state = listState,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        item {
+            Text(dev.name, color = Hyper.Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        val labels = dev.readouts.map { shortLabel(it.label) }
+        items(dev.readouts.size) { i ->
+            val c = dev.readouts[i]
+            // 门锁有两个「电池电量」（门锁本体 + 猫眼），去掉服务前缀后会撞名，撞了就用全名
+            val label = if (labels.count { it == labels[i] } > 1) c.label else labels[i]
+            ReadoutRow(label, dev.valueOf(c)?.let { readoutText(c, it) } ?: "—", acc)
+        }
+        if (dev.readouts.isEmpty()) {
+            item { Text("这个设备没有可读的属性", color = Hyper.Muted, fontSize = 12.sp) }
+        }
+
+        // 少数设备只读量之外还挂着零星可写项（天然气报警器的「远程消音」），一并摆出来
+        val writables = dev.quick.filter { it !is Control.Readout }
+        items(writables.size) { i ->
+            when (val c = writables[i]) {
+                is Control.Toggle -> {
+                    val v = dev.valueOf(c)?.bool == true
+                    Pill(
+                        text = "${shortLabel(c.label)} ${if (v) "开" else "关"}",
+                        accent = acc, filled = v,
+                        onClick = { model.write(dev.did, c, DevValue(true, bool = !v)) },
+                        modifier = Modifier.padding(horizontal = 26.dp).fillMaxWidth(),
+                    )
+                }
+                else -> Pill(
+                    text = shortLabel(c.label),
+                    accent = acc, filled = false,
+                    onClick = { onPick(c) },
+                    modifier = Modifier.padding(horizontal = 26.dp).fillMaxWidth(),
+                )
+            }
+        }
+        item {
+            Pill(
+                text = if (faved) "★ 已收藏" else "☆ 收藏",
+                accent = acc, filled = faved,
+                onClick = { model.toggleFavorite(dev.did) },
+                modifier = Modifier.padding(horizontal = 30.dp).fillMaxWidth(),
+            )
+        }
+    }
+}
+
+@Composable
+private fun ReadoutRow(label: String, value: String, acc: Accent) {
+    Row(
+        Modifier.padding(horizontal = 26.dp).fillMaxWidth()
+            .clip(RoundedCornerShape(19.dp))
+            .background(Hyper.Surface)
+            .padding(horizontal = 13.dp, vertical = 9.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            label, color = Hyper.Muted, fontSize = 11.sp,
+            maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
+        )
+        Spacer(Modifier.width(6.dp))
+        Text(value, color = acc.light, fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 1)
     }
 }
 
 /** 底部状态行：把所有只读量压成一行「标签 值」。 */
-private fun readoutLine(dev: Dev): String? = dev.quick
-    .filterIsInstance<Control.Readout>()
+private fun readoutLine(dev: Dev): String? = dev.readouts
     .mapNotNull { c ->
-        val v = dev.valueOf(c) ?: return@mapNotNull null
-        if (!v.ok || v.num == null) return@mapNotNull null
-        shortLabel(c.label) + " " + trimNum(v.num) + (c.unit?.let { shortUnit(it) } ?: "")
+        val t = dev.valueOf(c)?.let { readoutText(c, it) } ?: return@mapNotNull null
+        if (t == "—") null else shortLabel(c.label) + " " + t
     }
     .takeIf { it.isNotEmpty() }
     ?.joinToString(" · ")
 
-/**
- * spec 的中文描述有两种脏东西：非主服务的控件带「风机控制 · 」前缀，
- * 有些属性名后面还挂着括号说明（「有人无人（0为无人，1为有人）」）。
- * 82dp 宽的 chip 两种都放不下。
- */
-private fun shortLabel(s: String) = s
-    .substringAfterLast(" · ")
-    .substringBefore("（")
-    .substringBefore("(")
-    .trim()
+/** 渲染实现在 :core，CLI 的 `./mi list` 和表上走同一份代码。 */
+private fun readoutText(c: Control.Readout, v: DevValue): String =
+    if (!v.ok) "—" else c.render(v.num, v.bool)
+
+private fun shortLabel(s: String) = s.shortLabel()
 
 @Composable
 private fun Chip(
@@ -703,16 +879,4 @@ private fun BoxScope.ErrorToast(state: UiState, model: AppModel) {
 private fun kelvinPresets(c: Control.Range): List<Pair<Int, String>> =
     listOf(2700, 3500, 5000, 6500).filter { it >= c.min && it <= c.max }.map { it to "${it}K" }
 
-private fun trimNum(v: Double): String =
-    if (v % 1.0 == 0.0) v.toLong().toString() else String.format("%.1f", v)
 
-private fun shortUnit(u: String) = when (u) {
-    "percentage" -> "%"
-    "celsius" -> "°"
-    "kelvin" -> "K"
-    "watt" -> "W"
-    "lux" -> "lx"
-    "minutes" -> "分"
-    "seconds" -> "秒"
-    else -> u
-}

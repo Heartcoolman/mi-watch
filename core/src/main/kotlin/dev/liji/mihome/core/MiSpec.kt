@@ -54,13 +54,44 @@ fun String.urnCategory(): String? = split(':').getOrNull(3)
  */
 private val QUICK_WRITABLE = setOf(
     "on", "brightness", "color-temperature", "mode",
-    "target-temperature", "fan-level", "vertical-swing", "horizontal-swing",
+    "target-temperature", "target-humidity", "fan-level", "speed-level", "wind-speed",
+    "vertical-swing", "horizontal-swing",
+    "volume", "mute",
 )
 
-/** 值得在设备卡片上一眼看到的只读量。 */
-private val QUICK_READONLY = setOf(
-    "illumination", "occupancy-status", "electric-power",
-    "temperature", "relative-humidity", "battery-level",
+/**
+ * 允许在非主服务里出现电源开关的服务类别。
+ *
+ * `on` 默认只认主服务（桌灯 siid6 是番茄钟，它也有 `on`，见下面 toControls 的注释）。
+ * 但油烟机的照明、摄像机的白光灯确实是独立的、天天要按的开关，它们各自挂在
+ * light / white-light 服务下。按**服务类别**放行比按属性名白名单准得多——
+ * 试过用 `light-on`，结果抓到的是油烟机「蓝牙联动指示灯」而不是照明。
+ */
+private val SUB_POWER_SERVICES = setOf("light", "white-light", "fan")
+
+/**
+ * 只读量不像可写属性那样有误触风险，所以规则反过来：**主服务里的只读量默认全要**，
+ * 只挡掉明显是统计/诊断的；另加一小撮无论在哪个服务里出现都值得看的量。
+ *
+ * 为什么不继续用白名单：v1 那 6 个类别只够覆盖灯和空调。真跑一遍 21 个设备就会发现
+ * 燃气报警器（status/gas-concentration）、路由器（download-speed/连接数）、
+ * 体脂秤、音箱的常用控件数全是 0——白名单每加一种设备就要改一次，正是要避免的东西。
+ */
+private val ALWAYS_READ = setOf(
+    "temperature", "relative-humidity", "battery-level", "illumination",
+    "electric-power", "occupancy-status", "playing-state",
+)
+
+/** 主服务里也不该占 33mm 屏的：累计统计、固件版本、倒计时残值、事件流水号。 */
+private val READ_NOISE = setOf(
+    "fault", "working-time", "light-on-times", "remote-num", "radar-ver",
+    "has-someone-duration", "no-one-duration", "delay-remain-time", "air-dry-remain-time",
+    "connect-device-ids", "device-status", "online-timestamp", "audio-id",
+    "current-time", "operation-id", "ptz-camera", "camera-count",
+    "storage-total-space", "storage-free-space", "storage-used-space",
+    "video-codec", "audio-codec", "audio-bit-width", "audio-smp-rate", "audio-channel",
+    "self-clean", "clean-left-time", "filter-clean", "dry-cleaning-status",
+    "dry-cleaning-guide", "dry-cleaning-left-time", "customized-property-1",
 )
 
 sealed interface Control {
@@ -122,6 +153,10 @@ sealed interface Control {
         override val primary: Boolean,
         override val quick: Boolean,
         val unit: String?,
+        /** 有枚举的只读量（燃气 status、有人无人…）靠它把数字译回人话。 */
+        val options: List<Pair<Int, String>> = emptyList(),
+        /** 属性类别（occupancy-status、download-speed…），UI 靠它决定怎么格式化。 */
+        val cat: String? = null,
     ) : Control
 }
 
@@ -150,7 +185,10 @@ fun SpecInstance.toControls(
     includeReadouts: Boolean = true,
 ): List<Control> {
     val deviceCat = type.urnCategory()
+    // 有些设备的主服务名和设备类别对不上：摄像机的顶层类别是 camera，服务却叫 camera-control。
+    // 找不到同名服务时退到第一个非 device-information 的服务，否则整台设备一个控件都出不来。
     val primarySiid = services.firstOrNull { it.type.urnCategory() == deviceCat }?.iid
+        ?: services.firstOrNull { it.type.urnCategory() != "device-information" }?.iid
 
     val out = mutableListOf<Control>()
     for (svc in services) {
@@ -167,8 +205,9 @@ fun SpecInstance.toControls(
             // 只按类别筛会让表上多出一个「开关」，按下去其实是启动番茄钟。
             // 其余类别（fan-level、vertical-swing 等）在非主服务里也照常算常用——
             // 空调的风机控制就在 siid 3。
-            val quickW = cat in QUICK_WRITABLE && (cat != "on" || isPrimary)
-            val quickR = cat in QUICK_READONLY
+            val quickW = cat in QUICK_WRITABLE &&
+                (cat != "on" || isPrimary || svc.type.urnCategory() in SUB_POWER_SERVICES)
+            val quickR = cat in ALWAYS_READ || (isPrimary && cat != null && cat !in READ_NOISE)
 
             when {
                 p.writable && p.format == "bool" ->
@@ -187,7 +226,12 @@ fun SpecInstance.toControls(
                     )
 
                 includeReadouts && p.readable && !p.writable && p.format != "string" ->
-                    out += Control.Readout(svc.iid, p.iid, full, isPrimary, quickR, p.unit)
+                    out += Control.Readout(
+                        svc.iid, p.iid, full, isPrimary, quickR, p.unit,
+                        p.valueList.orEmpty()
+                            .mapIndexed { i, v -> v.value to (t.value(svc.iid, p.iid, i) ?: v.description) },
+                        cat,
+                    )
             }
         }
     }

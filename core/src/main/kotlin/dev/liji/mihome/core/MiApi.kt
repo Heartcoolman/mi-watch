@@ -49,7 +49,11 @@ data class DeviceInfo(
     /** 非空表示是网关下挂的子设备。 */
     val parentId: String?,
 ) {
-    /** BLE 设备的 did 形如 blt.3.xxx，基本只读且经网关中转，v1 直接排除。 */
+    /**
+     * BLE 设备的 did 形如 blt.3.xxx，经网关中转。
+     * v1 曾整体排除，v2 实测**云端 prop/get 对它们照常返回真值**（8/8 全通），
+     * 所以不再排除；这个标记只留给需要区分链路的地方。
+     */
     val isBle get() = did.startsWith("blt.")
 }
 
@@ -161,6 +165,23 @@ class MiApi(private val store: Store, private val auth: MiAuth, var verbose: Boo
                 name = o["name"]?.jsonPrimitive?.contentOrNull.orEmpty(),
             )
         }
+
+    /**
+     * did → 房间名。
+     * 归属关系是反的：房间对象上列 `dids`，设备记录里没有房间字段，所以只能这样倒着建索引。
+     */
+    fun rooms(): Map<String, String> {
+        val out = HashMap<String, String>()
+        (getHomes()["result"]?.jsonObject?.get("homelist") as? JsonArray).orEmpty().forEach { h ->
+            (h.jsonObject["roomlist"] as? JsonArray).orEmpty().forEach { r ->
+                val name = r.jsonObject["name"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                (r.jsonObject["dids"] as? JsonArray).orEmpty().forEach { d ->
+                    d.jsonPrimitive.contentOrNull?.let { out[it] = name }
+                }
+            }
+        }
+        return out
+    }
 
     fun devices(homeOwnerUid: Long, homeId: Long): List<DeviceInfo> =
         (getDevices(homeOwnerUid, homeId)["result"]?.jsonObject?.get("device_info") as? JsonArray)
