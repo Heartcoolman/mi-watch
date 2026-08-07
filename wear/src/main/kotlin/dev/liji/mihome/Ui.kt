@@ -59,6 +59,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
+import androidx.wear.compose.foundation.lazy.ScalingLazyListScope
 import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
 import androidx.wear.compose.material3.CircularProgressIndicator
 import androidx.wear.compose.material3.MaterialTheme
@@ -157,206 +158,189 @@ private fun BrightAndAwake() {
 // ---------- 设备列表 ----------
 
 /**
- * 收藏置顶，零滚动；往下才是按房间分组的全部设备。
+ * 收藏置顶，往下是按房间分组的全部设备。
  *
- * v1 只有三个设备，一屏排完就够了。v2 有 21 个，如果平铺，「抬腕开灯」就要先滚动找灯——
- * 这正是 v1 花力气解决掉的问题。所以把它拆成两段：第一屏永远是你自己选的常用设备，
- * 位置固定、零滚动；全部设备排在下面，按房间分组，设备多的房间靠前。
+ * 布局是 2 列磁贴而不是整宽长条：长条为了放一个名字吃掉整行，一屏只有 3 个，
+ * 22 个设备要滚 7 屏。两列之后一屏 5–6 个，而且传感器的读数能和名字并排放进同一格。
+ *
+ * 用 ScalingLazyColumn 承载：它会把靠近上下边缘的行自动缩小，正好补上圆屏的收口——
+ * 这是自己算内边距做不到的。
  */
 @Composable
 private fun DeviceScreen(state: UiState, model: AppModel) {
-    val scroll = rememberScrollState()
-    Column(
-        modifier = Modifier.fillMaxSize().verticalScroll(scroll),
+    val listState = rememberScalingLazyListState()
+    ScalingLazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        state = listState,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        val favs = state.favorites
-        // 让收藏那一组正好落在屏幕中间：(226 − n×52 − (n−1)×8) / 2，最少留 14dp
-        val top = ((226 - favs.size * 52 - (favs.size - 1).coerceAtLeast(0) * 8) / 2).coerceIn(14, 60)
-        Spacer(Modifier.height(top.dp))
-
-        favs.forEachIndexed { i, d ->
-            if (i > 0) Spacer(Modifier.height(Dim.CardGap))
-            DeviceRow(d, model)
-        }
+        tileRows(state.favorites, model)
 
         if (state.devices.isEmpty()) {
-            Text(
-                // 空列表最常见的成因是账号在海外区域而请求发去了国服。
-                // 自动探测已经跑过一轮，还是空就得让用户知道往哪儿看。
-                state.progress ?: if (state.busy) "载入中…" else "没有设备\n可能是账号区域不对",
-                color = Hyper.Muted, fontSize = 13.sp, textAlign = TextAlign.Center,
-                modifier = Modifier.padding(horizontal = 30.dp),
-            )
+            item {
+                Text(
+                    // 空列表最常见的成因是账号在海外区域而请求发去了国服。
+                    // 自动探测已经跑过一轮，还是空就得让用户知道往哪儿看。
+                    state.progress ?: if (state.busy) "载入中…" else "没有设备\n可能是账号区域不对",
+                    color = Hyper.Muted, fontSize = 13.sp, textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(horizontal = 30.dp),
+                )
+            }
         } else if (state.progress != null) {
-            Text(state.progress, color = Hyper.Muted, fontSize = 11.sp)
+            item { Text(state.progress, color = Hyper.Muted, fontSize = 11.sp) }
         }
 
         state.byRoom.forEach { (room, devs) ->
-            SectionHeader(room, devs.size)
-            devs.forEachIndexed { i, d ->
-                if (i > 0) Spacer(Modifier.height(Dim.CardGap))
-                DeviceRow(d, model)
-            }
+            item { SectionHeader(room, devs.size) }
+            tileRows(devs, model)
         }
 
-        Spacer(Modifier.height(18.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Pill(
-                text = if (state.busy) "刷新中" else "刷新",
-                accent = accentOf(null), filled = false, onClick = { model.refresh() },
-            )
-            Pill(text = "退出", accent = accentOf(null), filled = false, onClick = { model.signOut() })
+        item {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.padding(top = 10.dp),
+            ) {
+                Pill(
+                    text = if (state.busy) "刷新中" else "刷新",
+                    accent = accentOf(null), filled = false, onClick = { model.refresh() },
+                )
+                Pill(text = "退出", accent = accentOf(null), filled = false, onClick = { model.signOut() })
+            }
         }
-        Spacer(Modifier.height(14.dp))
+    }
+}
+
+/** 两两成行。落单的补一个等宽空位，免得最后一个被居中排版拽到中间。 */
+private fun ScalingLazyListScope.tileRows(devs: List<Dev>, model: AppModel) {
+    devs.chunked(2).forEach { pair ->
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(Dim.TileGap)) {
+                pair.forEach { d -> DeviceTile(d, model) }
+                if (pair.size == 1) Spacer(Modifier.width(Dim.TileW))
+            }
+        }
     }
 }
 
 @Composable
 private fun SectionHeader(title: String, count: Int) {
-    Spacer(Modifier.height(16.dp))
     Text(
         "$title  $count",
         color = Hyper.Muted,
         fontSize = 11.sp,
-        modifier = Modifier.padding(bottom = 8.dp),
+        modifier = Modifier.padding(top = 10.dp, bottom = 2.dp),
     )
 }
 
-/** 可开关的走磁贴，纯传感器走紧凑读数行——后者一屏能多放一个。 */
-@Composable
-private fun DeviceRow(d: Dev, model: AppModel) {
-    if (d.power != null) DeviceCard(d, onToggle = { model.toggle(d.did) }, onOpen = { model.open(d.did) })
-    else SensorCard(d, onOpen = { model.open(d.did) })
-}
-
 /**
- * 没有电源开关的设备：温湿度计、人体存在、路由器、门锁、体脂秤。
- * 它们点了也没什么可切的，所以整行点击＝进详情，右侧直接把读数摆出来——
- * 传感器的全部价值就是那个数字，让它在列表页就可见，等于省掉一次进出。
- */
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-private fun SensorCard(d: Dev, onOpen: () -> Unit) {
-    val acc = accentOf(d.category)
-    val interaction = remember { MutableInteractionSource() }
-    val summary = summaryOf(d)
-
-    Box(
-        modifier = Modifier
-            .padding(horizontal = Dim.CardPad)
-            .fillMaxWidth()
-            .height(44.dp)
-            .pressScale(interaction)
-            .clip(RoundedCornerShape(22.dp))
-            .background(Hyper.Surface)
-            .combinedClickable(
-                interactionSource = interaction, indication = null,
-                onClick = onOpen, onLongClick = onOpen,
-            ),
-    ) {
-        Row(
-            modifier = Modifier.fillMaxSize().padding(start = 9.dp, end = 11.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            DeviceIconOrGlyph(d, acc.deep, 28.dp, 18.dp)
-            Spacer(Modifier.width(7.dp))
-            Text(
-                d.name, color = Hyper.OnSurface, fontSize = 12.sp,
-                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
-            )
-            if (summary != null) {
-                Spacer(Modifier.width(5.dp))
-                Text(summary, color = acc.light, fontSize = 12.sp, fontWeight = FontWeight.Medium, maxLines = 1)
-            }
-        }
-    }
-}
-
-/** 列表页的读数摘要：取前两个只读量。温湿度计＝「25.9° 45%」。 */
-private fun summaryOf(d: Dev): String? = d.readouts.take(2)
-    .mapNotNull { c -> d.valueOf(c)?.let { readoutText(c, it) } }
-    .filter { it != "—" }
-    .takeIf { it.isNotEmpty() }
-    ?.joinToString(" ")
-
-/**
- * HyperOS 控制中心的磁贴：开启态整块被身份色渐变填满，关闭态退回深灰。
- * 状态由颜色表达，不写「开/关」二字——一眼扫过去比读字快。
+ * 一格设备。可开关的点一下就切、长按进详情；只读的点哪儿都是进详情。
  *
- * 整卡点击＝开关。命中区从一个 40dp 的拨杆扩大到 174×52dp，抬腕时几乎点不歪；
- * 进详情改用长按，因为那是低频动作。
+ * 状态仍然由颜色表达（开＝身份色渐变铺满），但 80dp 的格子比长条多出一块空间，
+ * 正好把传感器的读数直接印在名字下面——这是两列换来的最大好处，
+ * 「卧室 25.9°」不用点进去看。
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun DeviceCard(d: Dev, onToggle: () -> Unit, onOpen: () -> Unit) {
+private fun DeviceTile(d: Dev, model: AppModel) {
     val acc = accentOf(d.category)
     val on = d.on == true
-    val live = d.power != null && d.on != null
+    val hasPower = d.power != null
+    val live = hasPower && d.on != null
     val haptics = LocalHapticFeedback.current
     val interaction = remember { MutableInteractionSource() }
+    val summary = summaryOf(d)
 
     val fill by animateFloatAsState(
         targetValue = if (on) 1f else 0f,
         animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
-        label = "cardFill",
+        label = "tileFill",
     )
     val fg by animateColorAsState(
         targetValue = if (on) Hyper.OnAccent else Hyper.OnSurface,
-        label = "cardFg",
+        label = "tileFg",
     )
 
     Box(
         modifier = Modifier
-            .padding(horizontal = Dim.CardPad)
-            .fillMaxWidth()
-            .height(Dim.CardH)
+            .size(Dim.TileW, Dim.TileH)
             .pressScale(interaction)
-            .clip(RoundedCornerShape(Dim.CardRadius))
+            .clip(RoundedCornerShape(Dim.TileRadius))
             .background(Hyper.Surface)
             .combinedClickable(
                 interactionSource = interaction,
                 indication = null,
-                enabled = live && !d.busy,
-                onClick = onToggle,
+                enabled = !d.busy,
+                // 能开关的整格就是开关；没有开关的（传感器、音箱）点了进详情
+                onClick = { if (live) model.toggle(d.did) else model.open(d.did) },
                 onLongClick = {
                     haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                    onOpen()
+                    model.open(d.did)
                 },
             ),
     ) {
-        // 渐变铺在底色之上，用 alpha 过渡，开关切换才是渐变而不是硬切
         Box(Modifier.fillMaxSize().alpha(fill).background(acc.horizontal))
 
-        Row(
-            modifier = Modifier.fillMaxSize().padding(start = 11.dp, end = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            DeviceIconOrGlyph(d, if (on) Hyper.OnAccent else acc.deep, 34.dp, 21.dp)
-            Spacer(Modifier.width(8.dp))
-            Column(Modifier.weight(1f)) {
+        Column(Modifier.fillMaxSize().padding(horizontal = 9.dp, vertical = 8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                DeviceIconOrGlyph(d, if (on) Hyper.OnAccent else acc.deep, 24.dp, 18.dp)
+                Spacer(Modifier.weight(1f))
+                if (d.busy) {
+                    Box(
+                        Modifier.size(5.dp).clip(CircleShape)
+                            .background(if (on) Hyper.OnAccent else Hyper.Muted),
+                    )
+                }
+            }
+            Spacer(Modifier.weight(1f))
+            Text(
+                d.name,
+                color = fg,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Medium,
+                // 两行：80dp 宽一行只放得下五六个汉字，而「温湿度计2（床）」这种
+                // 靠后半截才能和另外四个温湿度计区分开
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                lineHeight = 12.sp,
+            )
+            // 传感器的读数直接摆出来；异常状态优先于读数
+            (offlineNote(d) ?: summary)?.let {
                 Text(
-                    d.name,
-                    color = fg,
-                    fontSize = 14.sp,
+                    it,
+                    color = if (on) Hyper.OnAccent else acc.light,
+                    fontSize = 11.sp,
                     fontWeight = FontWeight.Medium,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                )
-                // 正常状态不写字——颜色已经说完了。只有异常才需要解释
-                offlineNote(d)?.let {
-                    Text(it, color = if (on) Hyper.OnAccent else Hyper.Muted, fontSize = 10.sp, maxLines = 1)
-                }
-            }
-            if (d.busy) {
-                Box(
-                    Modifier.size(6.dp).clip(RoundedCornerShape(3.dp))
-                        .background(if (on) Hyper.OnAccent else Hyper.Muted),
                 )
             }
         }
     }
 }
+
+/**
+ * 磁贴上的读数摘要，最多两项。
+ *
+ * spec 顺序不等于重要性，所以按类别排一遍：温湿度、电功率这些是「这台设备现在怎么样」，
+ * 而 `status` 是个各家含义不同的通用字段——摄像机的 status 会显示成「不存在」
+ * （存储卡状态），对着一台正常工作的摄像机报这个只会让人以为坏了。
+ * 有开关的设备状态已经由颜色表达，就不再让 status 占这一行；
+ * 没开关的传感器则相反，燃气报警器的 status（「监测正常」）正是它存在的理由。
+ */
+private val SUMMARY_RANK = listOf(
+    "temperature", "relative-humidity", "electric-power", "occupancy-status",
+    "gas-concentration", "smoke-concentration", "illumination",
+    "download-speed", "upload-speed", "battery-level",
+)
+
+private fun summaryOf(d: Dev): String? = d.readouts
+    .filterNot { d.power != null && it.cat == "status" }
+    .sortedBy { SUMMARY_RANK.indexOf(it.cat).takeIf { i -> i >= 0 } ?: 50 }
+    .take(2)
+    .mapNotNull { c -> d.valueOf(c)?.let { readoutText(c, it) } }
+    .filter { it != "—" }
+    .takeIf { it.isNotEmpty() }
+    ?.joinToString(" ")
 
 /**
  * 米家原生图标优先，抓不到该型号时退回自绘的类别图形。
@@ -380,11 +364,13 @@ private fun DeviceIconOrGlyph(d: Dev, glyphColor: Color, iconSize: Dp, glyphSize
     }
 }
 
-private fun offlineNote(d: Dev): String? = when {
-    d.power == null -> "不支持开关"
-    d.on == null -> "离线"
-    else -> null
-}
+/**
+ * 只在真的异常时出字。
+ * 「不支持开关」曾经是这里的一条：整宽长条时代只有可控设备上榜，没开关算异常。
+ * 现在传感器是一等公民，22 个设备里一半没有开关，再报这句就是满屏噪音，
+ * 而且把真正该显示的读数挤掉了。
+ */
+private fun offlineNote(d: Dev): String? = if (d.power != null && d.on == null) "离线" else null
 
 // ---------- 设备详情 ----------
 

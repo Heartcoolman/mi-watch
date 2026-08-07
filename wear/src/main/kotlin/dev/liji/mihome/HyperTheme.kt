@@ -280,6 +280,17 @@ fun Modifier.pressScale(interaction: MutableInteractionSource): Modifier {
  * 按比例缩放反而会让好不容易调准的边距在别处失准。
  */
 object Dim {
+    /**
+     * 2 列磁贴。整宽长条为了放一个名字占掉全部横向空间，22 个设备要滚 7 屏；
+     * 两列之后一屏能看 5–6 个。80+8+80 = 168dp 宽，居中后离圆心最远处
+     * 需要 |y| ≤ √(113²−84²) ≈ 75dp——正好是中间两行的范围，
+     * 更外侧的行交给 ScalingLazyColumn 自己缩小，圆屏的收口是免费的。
+     */
+    val TileW = 80.dp
+    val TileH = 82.dp
+    val TileGap = 8.dp
+    val TileRadius = 22.dp
+
     val CardH = 52.dp
     val CardGap = 8.dp
     val CardPad = 26.dp // 左右各留 26dp → 卡宽 174dp
