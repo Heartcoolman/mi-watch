@@ -31,38 +31,22 @@ object Net {
     suspend fun <T> withWifi(ctx: Context, timeoutMs: Long = 20_000, block: suspend (bound: Boolean) -> T): T =
         withTransport(ctx, NetworkCapabilities.TRANSPORT_WIFI, "wifi", timeoutMs, block)
 
-    /**
-     * 粘性绑定到蓝牙伴随代理，直到进程结束。
+    /*
+     * 【不要给蓝牙写一个 bindBluetooth】——试过，是死路，实测证据如下：
      *
-     * 这是验证「只走蓝牙能不能控设备」的正确姿势：以前的做法是 `svc wifi disable`，
-     * 但关 Wi-Fi 会连带把「无线调试」关掉且不会自动恢复，adb 就再也回不来了。
-     * 显式绑定则让 App 走蓝牙、adb 照常走 Wi-Fi，互不干扰。
+     *   NetdEventListenerService: DNS Requested by 370, 10188(dev.liji.mihome),
+     *                             255(TIMEOUT), isBlocked=true, 11527ms
+     *
+     * 把进程 bindProcessToNetwork 到 COMPANION_PROXY(transport=BLUETOOTH) 之后，
+     * DNS 直接发到该网络自报的 DNS 地址上，超时且被阻断，请求永久挂起
+     * （连 OkHttp 的 callTimeout 都不触发，因为卡在解析阶段）。
+     *
+     * 蓝牙代理只在**系统自己做路由**时才工作（走的是系统的 ProxyConnectionV1），
+     * 手动绑 socket 恰好绕过了那套机制。
+     *
+     * 正确做法：什么都不做。Wi-Fi 不可用时系统会自动把默认网络切到 COMPANION_PROXY，
+     * 应用侧照常发 HTTPS 即可——实测可用，见 15:00 那批纯蓝牙读写记录。
      */
-    fun bindBluetooth(ctx: Context, timeoutMs: Long = 15_000): Boolean {
-        val cm = ctx.getSystemService(ConnectivityManager::class.java)
-        val latch = CountDownLatch(1)
-        val net = AtomicReference<Network?>()
-        val cb = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) {
-                net.set(network); latch.countDown()
-            }
-        }
-        return runCatching {
-            // 不 unregister：请求要一直在，网络才会保持可用
-            cm.requestNetwork(bluetoothRequest(), cb)
-            val ok = latch.await(timeoutMs, TimeUnit.MILLISECONDS)
-            val n = net.get()
-            if (ok && n != null) {
-                cm.bindProcessToNetwork(n)
-                val caps = cm.getNetworkCapabilities(n)
-                Flog.i("已绑定蓝牙代理 $n  validated=${caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)}")
-                true
-            } else {
-                Flog.w("蓝牙代理 ${timeoutMs}ms 内不可用")
-                false
-            }
-        }.onFailure { Flog.e("绑定蓝牙代理失败", it) }.getOrDefault(false)
-    }
 
     /** 诊断用：把当前所有可用网络打进日志，出问题时不用猜。 */
     fun dumpNetworks(ctx: Context) {
@@ -83,11 +67,6 @@ object Net {
             )
         }
     }
-
-    private fun bluetoothRequest(): NetworkRequest = NetworkRequest.Builder()
-        .addTransportType(NetworkCapabilities.TRANSPORT_BLUETOOTH)
-        .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-        .build()
 
     private suspend fun <T> withTransport(
         ctx: Context,

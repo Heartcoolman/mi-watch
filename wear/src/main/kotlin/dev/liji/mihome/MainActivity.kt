@@ -36,14 +36,8 @@ class MainActivity : ComponentActivity() {
     private fun handleDebugIntent(intent: Intent?): Boolean {
         if (intent == null) return false
 
+        // 每次调试启动都记一遍当前网络，出问题时不用猜是走的哪条
         Net.dumpNetworks(applicationContext)
-
-        // --es net bt：把进程粘到蓝牙代理，验证「只走蓝牙」这条路。
-        // 关键是不动 Wi-Fi——关 Wi-Fi 会连带关掉无线调试且不自动恢复，adb 就回不来了。
-        if (intent.getStringExtra("net") == "bt") {
-            val ok = Net.bindBluetooth(applicationContext)
-            Flog.i("intent: 强制走蓝牙 -> ${if (ok) "已绑定" else "绑定失败，仍走默认网络"}")
-        }
 
         intent.getStringExtra("session")?.let {
             Flog.i("intent: 注入会话")

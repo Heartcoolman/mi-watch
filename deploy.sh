@@ -7,9 +7,10 @@
 # 所以要先发现再连。
 #
 # 用法：
-#   ./deploy.sh          构建 + 等待手表 + 安装 + 启动
-#   ./deploy.sh log      把表上的文件日志抓回来（蓝牙盲测后用这个）
-#   ./deploy.sh session  把桌面会话注入到表里（登录走不通时的兜底）
+#   ./deploy.sh            构建 + 等待手表 + 安装 + 启动
+#   ./deploy.sh test [did] 无人值守触发一次真实的读+写
+#   ./deploy.sh log        把表上的文件日志抓回来
+#   ./deploy.sh session    把桌面会话注入到表里（登录走不通时的兜底）
 set -euo pipefail
 
 DIR=$(cd "$(dirname "$0")" && pwd)
@@ -63,9 +64,24 @@ deploy)
     # -r 保留数据：卸载重装会清掉已存的 passToken。
     nas "adb install -r -t --no-streaming /tmp/mi-watch.apk"
 
+    # 深度 Doze 会掐掉应用网络（netd 记为 isBlocked=true，表现为 UnknownHostException）。
+    # 日常交互时表是亮屏的，不受影响；但无人值守的 adb 测试必然踩到，
+    # 所以调试期把应用加进 idle 白名单。
+    echo '=== 解除 Doze 限制（调试用）==='
+    nas "adb shell dumpsys deviceidle whitelist +$PKG" | head -1
+
     echo '=== 启动 ==='
     nas "adb shell am start -n $PKG/.MainActivity"
     echo '✓ 完成'
+    ;;
+
+test)
+    # 无人值守地跑一次完整的读+写，结果看 ./deploy.sh log
+    connect
+    nas "adb shell dumpsys deviceidle unforce; adb shell dumpsys deviceidle whitelist +$PKG" >/dev/null
+    nas "adb shell am force-stop $PKG"
+    nas "adb shell am start -n $PKG/.MainActivity --es toggle ${2:-899794381}"
+    echo '✓ 已触发，约 15 秒后跑 ./deploy.sh log 看结果'
     ;;
 
 log)
