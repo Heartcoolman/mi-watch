@@ -57,9 +57,19 @@ data class DeviceInfo(
     val isBle get() = did.startsWith("blt.")
 }
 
-data class HomeInfo(val id: Long, val uid: Long, val name: String)
+data class HomeInfo(
+    val id: Long,
+    val uid: Long,
+    val name: String,
+    /** did → 房间名。归属是反的：房间对象上列 dids，设备记录里没有房间字段。 */
+    val rooms: Map<String, String> = emptyMap(),
+)
 
 class MiApi(private val store: Store, private val auth: MiAuth, var verbose: Boolean = false) {
+
+    private companion object {
+        const val KEY_REGION = "region"
+    }
 
     /** 不挂 cookie jar：签名请求的 Cookie 头是手工拼的，jar 会因域名不匹配而干扰。 */
     private val client = MiHttp.client()
@@ -93,7 +103,7 @@ class MiApi(private val store: Store, private val auth: MiAuth, var verbose: Boo
             .add("signature", signature)
             .build()
 
-        val req = MiHttp.req(MIOT_API_BASE + p)
+        val req = MiHttp.req(miotApiBase(store.get(KEY_REGION)) + p)
             .post(form)
             .header("x-xiaomi-protocal-flag-cli", "PROTOCAL-HTTP2") // 拼写错误是原样必需的
             .header("Cookie", "PassportDeviceId=${s.deviceId};userId=${s.userId};serviceToken=${s.serviceToken}")
@@ -156,31 +166,46 @@ class MiApi(private val store: Store, private val auth: MiAuth, var verbose: Boo
     }
 
     /** 类型化封装，:wear 只用这几个，不必接触 JSON。 */
+    /**
+     * 全部家庭，连房间表一起返回。
+     *
+     * 必须是「全部」而不是「第一个」：一个账号有多套房产是常态（本机测试账号就有
+     * 我的家 / 奶奶家 / 姥姥家三个），只读第一个会让另外两处的设备**在 App 里完全不存在**。
+     * 房间表顺路一起解析，省掉一次 gethome 往返。
+     */
     fun homes(): List<HomeInfo> =
         (getHomes()["result"]?.jsonObject?.get("homelist") as? JsonArray).orEmpty().map { e ->
             val o = e.jsonObject
+            val rooms = HashMap<String, String>()
+            (o["roomlist"] as? JsonArray).orEmpty().forEach { r ->
+                val name = r.jsonObject["name"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                (r.jsonObject["dids"] as? JsonArray).orEmpty().forEach { d ->
+                    d.jsonPrimitive.contentOrNull?.let { rooms[it] = name }
+                }
+            }
             HomeInfo(
                 id = o["id"]!!.jsonPrimitive.content.toLong(),
                 uid = o["uid"]!!.jsonPrimitive.longOrNull ?: error("家庭缺 uid"),
                 name = o["name"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+                rooms = rooms,
             )
         }
 
     /**
-     * did → 房间名。
-     * 归属关系是反的：房间对象上列 `dids`，设备记录里没有房间字段，所以只能这样倒着建索引。
+     * 探测账号归属的区域，返回带家庭的那个。登录后只跑一次，结果落盘。
+     * 判据是「能返回非空家庭列表」——错误区域会返回成功但空的结果，
+     * 只看 HTTP 状态或 code 分不出来。
      */
-    fun rooms(): Map<String, String> {
-        val out = HashMap<String, String>()
-        (getHomes()["result"]?.jsonObject?.get("homelist") as? JsonArray).orEmpty().forEach { h ->
-            (h.jsonObject["roomlist"] as? JsonArray).orEmpty().forEach { r ->
-                val name = r.jsonObject["name"]?.jsonPrimitive?.contentOrNull.orEmpty()
-                (r.jsonObject["dids"] as? JsonArray).orEmpty().forEach { d ->
-                    d.jsonPrimitive.contentOrNull?.let { out[it] = name }
-                }
-            }
+    fun detectRegion(): String? {
+        for (r in MIOT_REGIONS) {
+            store.set(KEY_REGION, r)
+            val homes = runCatching { homes() }.getOrDefault(emptyList())
+            if (homes.isNotEmpty()) return r
         }
-        return out
+        // 一个都没成的话把标记清掉，让下次启动重试——可能只是这次网络不好，
+        // 记成 cn 会让海外账号永远停在空列表上，且没有任何线索
+        store.set(KEY_REGION, null)
+        return null
     }
 
     fun devices(homeOwnerUid: Long, homeId: Long): List<DeviceInfo> =

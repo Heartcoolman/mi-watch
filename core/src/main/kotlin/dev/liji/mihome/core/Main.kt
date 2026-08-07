@@ -46,6 +46,7 @@ fun main(args: Array<String>) {
             "spec" -> spec(rest)
             "controls-urn" -> controlsUrn(rest)
             "bundle" -> bundle(rest)
+            "region" -> region(rest)
             "audit" -> audit(rest)
             "list" -> list()
             "icons" -> icons(rest)
@@ -62,6 +63,29 @@ fun main(args: Array<String>) {
     } catch (e: Exception) {
         System.err.println("✗ ${e::class.simpleName}: ${e.message}")
         kotlin.system.exitProcess(1)
+    }
+}
+
+/** 查看或探测账号归属的区域。开源用户里海外账号占相当比例，这是最常见的排查入口。 */
+private fun region(a: List<String>) {
+    when (val arg = a.firstOrNull()) {
+        null -> {
+            val cur = store.get("region") ?: "cn（默认）"
+            val homes = runCatching { api.homes() }.getOrDefault(emptyList())
+            println("当前区域 = $cur   基址 ${miotApiBase(store.get("region"))}")
+            println("家庭 ${homes.size} 个${if (homes.isEmpty()) "  ← 区域可能不对，跑 ./mi region detect" else "：" + homes.joinToString { it.name }}")
+        }
+        "detect" -> {
+            println("逐个试：${MIOT_REGIONS.joinToString()}")
+            val r = api.detectRegion()
+            if (r == null) println("✗ 所有区域都没返回家庭。可能是会话过期，或这个账号确实还没建家庭。")
+            else println("✓ 账号在 $r，已记住（基址 ${miotApiBase(r)}）")
+        }
+        else -> {
+            require(arg in MIOT_REGIONS) { "未知区域 $arg，可选 ${MIOT_REGIONS.joinToString()}" }
+            store.set("region", arg)
+            println("已设为 $arg（${miotApiBase(arg)}）")
+        }
     }
 }
 
@@ -94,6 +118,8 @@ private fun audit(a: List<String>) {
         .forEach { (cat, p) -> println("  %-32s %d/%d 无电源".format(cat, p.first, p.second)) }
 }
 
+private const val PROP_BATCH = 80
+
 private fun pct(a: Int, b: Int) = "%.1f%%".format(a * 100.0 / b)
 
 /**
@@ -104,29 +130,34 @@ private fun pct(a: Int, b: Int) = "%.1f%%".format(a * 100.0 / b)
  * 秒级就能看出「21 个设备各自会显示成什么」。渲染函数放在 :core 就是为了这件事。
  */
 private fun list() {
-    val uid = store.get("homeOwnerUid")!!.toLong()
-    val homeId = store.get("homeId")!!.toLong()
-    val rooms = api.rooms()
+    val homes = api.homes()
+    println("区域=${store.get("region") ?: "cn"}  家庭 ${homes.size} 个：${homes.joinToString { it.name }}\n")
+    val rooms = homes.flatMap { it.rooms.entries }.associate { it.key to it.value }
     val specs = SpecClient(File("wear/src/main/assets/spec"))
 
-    val devs = api.devices(uid, homeId).map { info ->
+    // 全部家庭都要读——只读第一个会让另外几处的设备在 App 里完全不存在
+    val infos = homes.flatMap { api.devices(it.uid, it.id) }.distinctBy { it.did }
+
+    val devs = infos.map { info ->
         val controls = info.specType?.let { t ->
             runCatching { specs.spec(t).toControls(specs.translations(t)) }.getOrNull()
         }.orEmpty()
         Triple(info, rooms[info.did] ?: "未分组", controls)
-    }.sortedWith(compareByDescending<Triple<DeviceInfo, String, List<Control>>> {
-        it.third.any { c -> c.quick }
-    }.thenBy { it.first.name })
+    }.sortedWith(
+        compareByDescending<Triple<DeviceInfo, String, List<Control>>> { it.third.any { c -> c.quick } }
+            .thenBy { it.first.name },
+    )
 
-    // 和表上一样：电源 + 前两个只读量，一次批量请求
+    // 和表上一样：电源 + 前两个只读量，分批请求
     val refs = devs.flatMap { (info, _, cs) ->
         val q = cs.filter { it.quick }
         val power = q.filterIsInstance<Control.Toggle>().firstOrNull { it.isPower }
         val ro = q.filterIsInstance<Control.Readout>().take(2)
         (listOfNotNull(power) + ro).map { PropRef(info.did, it.siid, it.piid) }
     }
-    val got = api.propGet(refs).associateBy { Triple(it.did, it.siid, it.piid) }
-    println("一次 prop/get 读了 ${refs.size} 个属性\n")
+    val got = refs.chunked(PROP_BATCH).flatMap { api.propGet(it) }
+        .associateBy { Triple(it.did, it.siid, it.piid) }
+    println("设备 ${devs.size} 个，读了 ${refs.size} 个属性（分 ${(refs.size + PROP_BATCH - 1) / PROP_BATCH} 批）\n")
 
     devs.groupBy { it.second }.toList().sortedByDescending { it.second.size }.forEach { (room, list) ->
         println("── $room  ${list.size} ──")
@@ -142,7 +173,7 @@ private fun list() {
                 if (v.code != 0) null else c.render(v.asDouble, v.asBool).takeIf { it != "—" }
             }.joinToString(" ").ifEmpty { "—" }
             val kinds = q.filter { it !is Control.Readout }.size
-            println("  %-6s %-22s %s".format(state, info.name.take(11), "可控 $kinds / 读数 ${q.size - kinds}"))
+            println("  %-8s %-22s %s".format(state, info.name.take(11), "可控 $kinds / 读数 ${q.size - kinds}"))
         }
     }
 }
@@ -180,6 +211,7 @@ private fun usage() = println(
       spec <urn>                     打印 MIoT spec 树（免登录）
       controls-urn <urn>             打印归约出的控件（免登录，调 toControls 用）
       bundle <outdir> <urn>...       把 spec 与中文翻译写进 assets，供表上首启即用
+      region [detect|<code>]         查看/探测/强设账号区域（cn de sg us ru i2 tw）
       audit [每品类数量]              拿 miot-spec 全量语料检验归约规则的覆盖率
       list                           在 Mac 上跑一遍表上列表页会显示的内容
       icons <outdir> [model...]       抓米家原生设备图标进 assets（不传 model 就取全部设备）

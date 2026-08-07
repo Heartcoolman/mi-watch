@@ -9,6 +9,7 @@ import com.google.zxing.qrcode.QRCodeWriter
 import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
 import dev.liji.mihome.core.Control
 import dev.liji.mihome.core.MiApi
+import dev.liji.mihome.core.HomeInfo
 import dev.liji.mihome.core.MiAuth
 import dev.liji.mihome.core.MiQrExpiredException
 import dev.liji.mihome.core.PropRef
@@ -111,12 +112,22 @@ class AppModel(private val app: Context) {
     /** 首屏收藏的容量。三张 52dp 卡片正好在 226dp 上居中排完，零滚动。 */
     private val autoFavoriteCount = 3
 
-    /** 房间表变化极少，一个进程生命周期内取一次就够——省掉每次刷新的一个蓝牙往返。 */
-    private var roomMap: Map<String, String>? = null
+    /** 家庭表（含房间）变化极少，一个进程生命周期内取一次就够——省掉每次刷新的一个蓝牙往返。 */
+    private var homesCache: List<HomeInfo>? = null
+
+    /** 区域探测一次启动最多跑一轮，免得每次刷新都对着七个区域各发一次请求。 */
+    private var regionProbed = false
 
     private val store = AndroidStore(app)
     private val api = MiApi(store, MiAuth(store))
     private val specs by lazy { SpecCache.client(app) }
+
+    /**
+     * spec 标签的语言。之前写死 zh_cn——对非中文用户，属性名会变成一半中文一半英文
+     * （翻译里有的取中文，没有的落回 spec 自带的英文 description）。
+     * miot-spec 的 multiLanguage 只提供 en 和 zh_cn 两种。
+     */
+    private val specLang = if (java.util.Locale.getDefault().language == "zh") "zh_cn" else "en"
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     private val _state = MutableStateFlow(UiState())
@@ -240,10 +251,15 @@ class AppModel(private val app: Context) {
     }
 
     private fun loadDevices(): List<Dev> {
-        val (uid, homeId) = homeIds()
-        val rooms = roomMap ?: Flog.timed("gethome/rooms") { api.rooms() }.also { roomMap = it }
+        val homes = homes()
+        val rooms = homes.flatMap { it.rooms.entries }.associate { it.key to it.value }
 
-        val infos = Flog.timed("device_list") { api.devices(uid, homeId) }
+        // 全部家庭都要读。一个账号有多套房产是常态（本机账号就有三个家庭），
+        // 只读第一个会让另外几处的设备在 App 里完全不存在。
+        val infos = Flog.timed("device_list x${homes.size}") {
+            homes.flatMap { api.devices(it.uid, it.id) }
+        }.distinctBy { it.did }
+
         val controlsByType = prefetchControls(infos.mapNotNull { it.specType }.distinct())
 
         val devs = infos
@@ -302,7 +318,11 @@ class AppModel(private val app: Context) {
     private fun readProps(devs: List<Dev>, pick: (Dev) -> List<Control.Prop>): List<Dev> {
         val refs = devs.flatMap { d -> pick(d).map { PropRef(d.did, it.siid, it.piid) } }
         if (refs.isEmpty()) return devs
-        val got = Flog.timed("prop/get x${refs.size}") { api.propGet(refs) }
+        // 分批：设备多的家庭一次能凑出几百个属性，请求体过大会被服务端拒。
+        // 批量仍然是蓝牙链路上最划算的优化，所以批子开得尽量大。
+        val got = Flog.timed("prop/get x${refs.size}") {
+            refs.chunked(PROP_BATCH).flatMap { api.propGet(it) }
+        }
         val byKey = got.associateBy { Triple(it.did, it.siid, it.piid) }
         return devs.map { d ->
             val merged = d.values.toMutableMap()
@@ -442,21 +462,34 @@ class AppModel(private val app: Context) {
 
     private companion object {
         const val KEY_FAV = "favorites"
+
+        /** 一次 prop/get 的属性上限。实测 58 个没问题，留出余量。 */
+        const val PROP_BATCH = 80
     }
 
-    private fun homeIds(): Pair<Long, Long> {
-        store.get("homeId")?.toLongOrNull()?.let { id ->
-            store.get("homeOwnerUid")?.toLongOrNull()?.let { return it to id }
+    /**
+     * 全部家庭（含房间表）。首次调用时顺带把账号归属的区域定下来。
+     *
+     * 区域必须自动探测：登录流程全球统一，但业务接口按区域分开（海外是
+     * de./sg./us./ru./i2./tw. 前缀）。选错的表现是「登录成功但一个设备都没有」，
+     * 让用户自己猜是开源项目里最难自查的一类问题。判据是「能返回非空家庭列表」——
+     * 错误区域返回的是成功但空的结果，看状态码分不出来。
+     */
+    private fun homes(): List<HomeInfo> {
+        homesCache?.let { return it }
+        var list = Flog.timed("gethome") { api.homes() }
+        if (list.isEmpty() && !regionProbed) {
+            regionProbed = true
+            val r = Flog.timed("区域探测") { api.detectRegion() }
+            Flog.i("账号区域 = ${r ?: "未探测到"}")
+            if (r != null) list = api.homes()
         }
-        val home = Flog.timed("gethome") { api.homes() }.firstOrNull() ?: error("未取到家庭列表")
-        store.set("homeId", home.id.toString())
-        store.set("homeOwnerUid", home.uid.toString())
-        Flog.i("默认家庭 ${home.name} id=${home.id}")
-        return home.uid to home.id
+        if (list.isNotEmpty()) homesCache = list
+        return list
     }
 
     private fun controlsOf(spec: SpecInstance): List<Control> =
-        spec.toControls(specs.translations(spec.type))
+        spec.toControls(specs.translations(spec.type, specLang))
 
     /**
      * 并发预取 spec 并归约成控件。

@@ -179,7 +179,15 @@ private fun DeviceScreen(state: UiState, model: AppModel) {
         }
 
         if (state.devices.isEmpty()) {
-            Text(if (state.busy) "载入中…" else "没有设备", color = Hyper.Muted, fontSize = 14.sp)
+            Text(
+                // 空列表最常见的成因是账号在海外区域而请求发去了国服。
+                // 自动探测已经跑过一轮，还是空就得让用户知道往哪儿看。
+                state.progress ?: if (state.busy) "载入中…" else "没有设备\n可能是账号区域不对",
+                color = Hyper.Muted, fontSize = 13.sp, textAlign = TextAlign.Center,
+                modifier = Modifier.padding(horizontal = 30.dp),
+            )
+        } else if (state.progress != null) {
+            Text(state.progress, color = Hyper.Muted, fontSize = 11.sp)
         }
 
         state.byRoom.forEach { (room, devs) ->

@@ -58,7 +58,8 @@ fun Store.saveSession(s: Session) {
 }
 
 fun Store.clearSession() {
-    listOf("userId", "cUserId", "passToken", "ssecurity", "serviceToken", "homeId", "homeOwnerUid")
+    // region 也要清：换个账号很可能归属另一个区域
+    listOf("userId", "cUserId", "passToken", "ssecurity", "serviceToken", "region")
         .forEach { set(it, null) }
     // deviceId 故意保留：它绑在 passport 会话上，重登时复用同一个更稳。
 }

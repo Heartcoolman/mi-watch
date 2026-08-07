@@ -13,7 +13,21 @@ import java.util.concurrent.TimeUnit
 
 const val MI_UA = "APP/com.xiaomi.mihome APPV/6.0.103 iosPassportSDK/3.9.0 iOS/14.4 miHSTS"
 const val MIOT_SID = "xiaomiio"
-const val MIOT_API_BASE = "https://api.io.mi.com/app/"
+/**
+ * 账号归属的区域。**登录流程与区域无关**——passport（account.xiaomi.com）和
+ * STS 回调（sts.api.io.mi.com）全球统一，只有登录之后的业务接口带区域前缀。
+ * 这一点由 micloud 和 Xiaomi-cloud-tokens-extractor 两个独立实现的源码互相印证。
+ *
+ * 所以不需要让用户在登录前选区域：登录成功后逐个试一遍、谁能返回家庭列表就是谁，
+ * 结果落盘，之后不再探测。选错区域的表现是「登录成功但一个设备都没有」，
+ * 这是开源项目里最常见也最难自查的一类 issue，能自动定就别让用户猜。
+ */
+val MIOT_REGIONS = listOf("cn", "de", "sg", "us", "ru", "i2", "tw")
+
+fun miotApiBase(region: String?): String {
+    val r = region?.lowercase().orEmpty()
+    return if (r.isEmpty() || r == "cn") "https://api.io.mi.com/app/" else "https://$r.api.io.mi.com/app/"
+}
 const val SPEC_BASE = "https://miot-spec.org/"
 const val SERVICE_LOGIN_URL = "https://account.xiaomi.com/pass/serviceLogin?sid=$MIOT_SID&_json=true"
 const val SERVICE_LOGIN_AUTH_URL = "https://account.xiaomi.com/pass/serviceLoginAuth2"
