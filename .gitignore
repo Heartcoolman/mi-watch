@@ -1,0 +1,8 @@
+local.properties
+secrets.properties
+.gradle/
+build/
+*.apk
+.idea/
+*.iml
+.mihome-core.properties

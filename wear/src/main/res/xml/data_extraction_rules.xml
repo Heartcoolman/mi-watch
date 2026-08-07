@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- passToken 是长期凭证，等价于账号常驻登录态：既不进云备份，也不进换机迁移。 -->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="root" />
+        <exclude domain="file" />
+        <exclude domain="sharedpref" />
+        <exclude domain="database" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="root" />
+        <exclude domain="file" />
+        <exclude domain="sharedpref" />
+        <exclude domain="database" />
+    </device-transfer>
+</data-extraction-rules>
