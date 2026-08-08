@@ -36,7 +36,7 @@ connect() {
         local target
         target=$(nas "timeout 10 adb mdns services 2>/dev/null | grep _adb-tls-connect | awk '{print \$3}' | head -1" || true)
         if [ -n "$target" ]; then
-            echo "发现 $target，连接中……"
+            echo "发现 ${target}，连接中……"
             if nas "adb connect $target" | grep -qE 'connected'; then
                 echo '✓ 已连接'
                 return 0
