@@ -11,3 +11,6 @@ build/
 # 构建前用 ./mi bundle / ./mi icons 生成（可选，缺了会走运行时抓取和自绘图形）。
 wear/src/main/assets/spec/
 wear/src/main/assets/icon/
+
+# macOS
+.DS_Store
