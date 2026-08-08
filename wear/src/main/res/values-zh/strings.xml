@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">米家</string>
+    <string name="app_name">腕上米家</string>
     <string name="tile_scenes_label">米家场景</string>
     <string name="complication_label">米家开关</string>
 

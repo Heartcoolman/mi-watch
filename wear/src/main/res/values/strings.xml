@@ -2,9 +2,9 @@
 <!-- 默认英文：开源默认面向全球用户；中文在 values-zh。
      spec 属性名不在这里——它们跟随系统语言由 miot-spec 的 multiLanguage 提供。 -->
 <resources>
-    <string name="app_name">Mi Home Watch</string>
+    <string name="app_name">MiJia Wear</string>
     <string name="tile_scenes_label">Scenes</string>
-    <string name="complication_label">Mi Home switch</string>
+    <string name="complication_label">MiJia switch</string>
 
     <!-- 登录 -->
     <string name="qr_generating">Generating QR code…</string>

@@ -1,31 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 灯泡 + 光晕：一眼看出是「控家里的灯」 -->
+<!-- 米家风格的线条小房子：一笔连续的描边，门是底边中央的圆拱缺口。
+     自绘的近似，不是官方标志的拷贝。圆头端点 + 圆角折点给出米家的柔和观感。 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
 
-    <!-- 灯泡外壳 -->
     <path
         android:strokeColor="#FFFFFF"
-        android:strokeWidth="5"
+        android:strokeWidth="5.5"
         android:strokeLineCap="round"
         android:strokeLineJoin="round"
         android:fillColor="#00000000"
-        android:pathData="M54,32 C44,32 36,40 36,50 C36,57 40,61 43,65 L43,71 L65,71 L65,65 C68,61 72,57 72,50 C72,40 64,32 54,32 Z" />
-
-    <!-- 灯座 -->
-    <path
-        android:fillColor="#FFFFFF"
-        android:fillAlpha="0.55"
-        android:pathData="M45,74h18v4h-18z M47,80h14v4h-14z" />
-
-    <!-- 光晕 -->
-    <path
-        android:strokeColor="#FF8A3D"
-        android:strokeWidth="4.2"
-        android:strokeLineCap="round"
-        android:fillColor="#00000000"
-        android:pathData="M54,20 L54,26 M28,50 L22,50 M86,50 L80,50 M34,31 L30,27 M74,31 L78,27" />
+        android:pathData="M46,74 L37,74 L37,50.5 L54,36 L71,50.5 L71,74 L62,74 L62,66 A8,8 0 0 0 46,66 Z" />
 </vector>
