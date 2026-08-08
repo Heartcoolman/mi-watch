@@ -1,168 +1,168 @@
 <div align="center">
 
-<img src="docs/screenshots/icon.png" width="96" alt="HomeWrist icon" />
+<img src="docs/screenshots/icon.png" width="88" alt="Project icon" />
 
-# HomeWrist &nbsp;<sub>小腕管家</sub>
+# HomeWrist · 小腕管家
 
-**A third-party Mi Home client for Wear OS.**
-The watch talks to Xiaomi's cloud **directly** — traffic is proxied over Bluetooth by the paired phone, so it needs neither Home Assistant nor Wi‑Fi on the watch.
+**A third-party Mi Home (Mijia) smart-home client for Wear OS**
 
 [![License](https://img.shields.io/badge/license-MIT-3DA639)](LICENSE)
 ![Platform](https://img.shields.io/badge/Wear%20OS-6-4285F4?logo=wearos&logoColor=white)
 ![Kotlin](https://img.shields.io/badge/Kotlin-2.2-7F52FF?logo=kotlin&logoColor=white)
 ![minSdk](https://img.shields.io/badge/minSdk-33-3DDC84?logo=android&logoColor=white)
-![Compose](https://img.shields.io/badge/Compose-for%20Wear%20OS-4285F4)
 
 English · [中文](README.md)
-
-<br/>
-
-<table>
-  <tr>
-    <td align="center" width="260">
-      <img src="docs/screenshots/list.png" width="240" alt="Device list with a scene row on top" /><br/>
-      <sub>Scene row + room‑grouped tiles</sub>
-    </td>
-    <td align="center" width="260">
-      <img src="docs/screenshots/detail.png" width="240" alt="Device detail with a vertical slider" /><br/>
-      <sub>Vertical slider · picker chips · live readouts</sub>
-    </td>
-  </tr>
-</table>
-
-<sub>Real screenshots on a Galaxy Watch 7 (480×480). Device names anonymized.</sub>
 
 </div>
 
 ---
 
-## Why this exists
+## Abstract
 
-Controlling Mi Home devices from the wrist usually means dragging out your phone. HomeWrist puts the whole home one wrist‑raise away — favorites, rooms, scenes, and per‑device controls — without a companion server, without watch Wi‑Fi, and **without a per‑model compatibility table**.
+This project provides direct control of Mi Home smart-home devices from a Wear OS watch. The watch communicates with Xiaomi's cloud through the paired phone's Bluetooth proxy, and therefore depends on neither an intermediary service such as Home Assistant nor a Wi‑Fi connection on the watch itself. In contrast to conventional implementations that rely on a per‑model compatibility table, this project derives device controls at runtime from the MIoT‑Spec‑V2 specification, thereby supporting arbitrary models, firmware versions, and device categories without code changes. Development and validation were carried out on a Galaxy Watch 7 (Wear OS 6 / Android 16 / 480×480 round display).
+
+<div align="center">
+<table>
+  <tr>
+    <td align="center" width="260">
+      <img src="docs/screenshots/list.png" width="230" alt="Device list screen" /><br/>
+      <sub><b>Fig. 1</b> &nbsp; Device list: scene row on top, room‑grouped tiles</sub>
+    </td>
+    <td align="center" width="260">
+      <img src="docs/screenshots/detail.png" width="230" alt="Device detail screen" /><br/>
+      <sub><b>Fig. 2</b> &nbsp; Device detail: vertical slider, enum picker, live readouts</sub>
+    </td>
+  </tr>
+</table>
+<sub>Screenshots on a Galaxy Watch 7 (480×480); device names anonymized.</sub>
+</div>
 
 ## Features
 
-- 🔑 **QR‑code login** — scan with the Mi Home app; the scan itself is your second factor, so captcha / 2FA is bypassed.
-- 🏠 **Device list** — favorites pinned to the first screen, everything else grouped by room, sensor readings printed right on the tile.
-- ⚡ **Manual scenes** — a chip row at the top of the list; one tap runs "Leaving home" instead of toggling devices one at a time. Also a dedicated **scene Tile**.
-- 🎚️ **Detail page** — vertical slider for brightness / temperature (switchable when a device has several continuous values), enums in a picker, actions on tap. **Single‑input actions** (AC target temp, vacuum suction) open a picker and fire.
-- ⌚ **Two Tiles + a complication** — a 2×3 device grid, a 2×3 scene grid, and the first favorite's switch right on the watch face.
-- 🌐 **Follows the system language** (English / Chinese), spec property labels included.
+- **QR-code authentication.** Login is completed by scanning, with the Mi Home app, a QR code shown on the watch. The scan itself constitutes a second authentication factor, so no captcha or secondary‑verification flow is required.
+- **Device list.** Favorites are pinned to the first screen; the remainder are grouped by room. Sensor readings are rendered directly on the tile.
+- **Manual scenes.** Manual scenes are presented as a horizontal row at the top of the list and triggered with a single tap; a dedicated scene Tile is also provided.
+- **Device detail.** A vertical slider adjusts continuous quantities such as brightness and temperature (selectable when several are present); enumerated properties are chosen through an overlay; input‑free actions fire on tap. For **single‑input actions** (e.g. air‑conditioner target temperature, vacuum suction level), a value is chosen in an overlay and dispatched directly.
+- **Watch-face surfaces.** Two Tiles (a 2×3 device‑switch grid and a 2×3 scene grid) and one watch‑face complication (the first favorite's switch state) are provided.
+- **Localization.** The interface language follows the system setting (Chinese / English), as do device property labels.
 
-> **No compatibility table.** Every control is derived at runtime from **MIoT‑Spec‑V2**: fetch the device's spec, reduce properties/actions by category into toggles, sliders, choices, readouts and actions. No `piid` is hardcoded anywhere — new models, firmwares and categories just work.
+## Control derivation
 
-## Coverage
+Every interactive control is derived at runtime from the [MIoT‑Spec‑V2](https://iot.mi.com/new/doc/design/spec/overview) specification, with no hardcoded property identifiers (`piid`). The procedure is as follows: the device specification is fetched, then its properties and actions are reduced, by category, into five control kinds — toggles, sliders, choices, read‑outs, and actions. Because the reduction depends on category rather than specific identifiers, changing model, firmware, or category requires no code change.
 
-Measured with `./mi audit` against the public miot‑spec.org corpus (457 models / 177 categories):
+The rationale and trade‑off behind each reduction rule are documented in the comments of [`core/.../MiSpec.kt`](core/src/main/kotlin/dev/liji/mihome/core/MiSpec.kt); each rule corresponds to a failure observed on the real corpus. For instance, using the property whitelist as an admission gate renders roughly 20% of models as empty cards, and matching the primary service by same‑name category alone yields no controls for cameras (whose service is named `camera-control`).
+
+## Coverage evaluation
+
+Measured with `./mi audit` over a sample of the public miot‑spec.org corpus (457 models / 177 categories):
 
 | Metric | Result |
 |---|---:|
-| Usable quick controls derived | **86.9%** |
-| Power switch identified | 36.1% |
-| Median quick controls per device | 4 |
+| Models with usable quick controls derived | **86.9%** |
+| Models with a power switch identified | 36.1% |
+| Median quick controls per model | 4 |
 
-The remaining 13.1% are mostly devices whose spec exposes no readable/writable member at all (trackers, smart cups — event‑only), plus a few models that surface only vendor‑private services.
+The remaining 13.1% are largely devices whose specification exposes no readable or writable member at all (e.g. trackers, smart cups — event‑only models), together with a few models that expose only vendor‑private services.
 
-Every reduction rule's trade‑off is documented in [`core/.../MiSpec.kt`](core/src/main/kotlin/dev/liji/mihome/core/MiSpec.kt), each tied to a failure measured on the real corpus — e.g. treating the whitelist as a gate blanks out 20% of models; matching the primary service by same‑name category yields zero controls for cameras (their service is called `camera-control`).
+## The scene protocol
 
-## The scene protocol (not in any public source)
-
-The scene endpoints were probed and verified by this project; **every path circulating online is dead**:
+The cloud endpoints for Mi Home scenes are undocumented; their addresses were determined empirically by this project. Several endpoint paths circulating online are defunct. The working interface is:
 
 ```
-list  appgateway/miot/appsceneservice/AppSceneService/GetSceneList   { "home_id": <number> }
-run   appgateway/miot/appsceneservice/AppSceneService/NewRunScene    { "scene_id": "…", "scene_type": 2, "trigger_key": "user.click" }
+list    appgateway/miot/appsceneservice/AppSceneService/GetSceneList
+        { "home_id": <integer> }
+
+run     appgateway/miot/appsceneservice/AppSceneService/NewRunScene
+        { "scene_id": "…", "scene_type": 2, "trigger_key": "user.click" }
 ```
 
-Three traps, each of which silently breaks an implementation:
+Three points, each of which silently breaks an implementation, were confirmed by testing:
 
-1. `RunScene` (without `New`) returns `code:0 result:true` **but the device never moves** — only `NewRunScene` actually executes.
-2. `scene_type` is mandatory and must be `2` — unrelated to the scene record's `type` field, which is always `0`.
-3. Manual scenes must be filtered by `scene_trigger.triggers[].src == "user"`, or timer/sensor automations leak into the list.
+1. `RunScene` (without the `New` prefix) under the same service returns `code:0` and `result:true`, yet the device performs no action; only `NewRunScene` takes effect.
+2. `scene_type` is mandatory and must equal `2`. It is unrelated to the scene record's `type` field, which is always `0`.
+3. Manual scenes must be filtered by `scene_trigger.triggers[].src == "user"`; otherwise timer‑ and sensor‑triggered automations enter the list.
 
-## Architecture
+## System architecture
 
-Two modules. `:core` is a pure‑JVM protocol implementation + CLI with **zero Android dependencies**; `:wear` is the Compose for Wear OS UI.
+The project comprises two modules: `:core`, a pure‑JVM protocol implementation and command‑line tool with no Android dependencies, and `:wear`, the interface layer built on Compose for Wear OS.
 
-The split isn't for abstraction — it **moves verification from the watch back to the desktop**. A deploy round‑trip is ten‑plus minutes (LAN, watch awake); `./mi list` runs the *exact same code path* as the watch (same `toControls`, same value rendering) and shows in seconds what every device will render as.
+The purpose of this division is to **move verification from the watch back to the desktop**. A full device‑side deployment traverses the local network and awaits the watch waking, taking upward of ten minutes; the command‑line tool `./mi list` exercises exactly the same code path as the watch (the same `toControls` reduction and value rendering) and produces each device's rendered result within seconds.
 
 ```
 core/   MiCrypto signing · MiHttp · MiAuth login state machine · MiApi · MiSpec reduction · MiFormat rendering
-wear/   AppModel (single state holder) · Ui (Compose) · MiTileService / SceneTileService · MiComplicationService · SpecCache
+wear/   AppModel state holder · Ui · MiTileService / SceneTileService · MiComplicationService · SpecCache
 ```
 
-## Building
+## Build
 
-Needs JDK 21 and an Android SDK (compileSdk 36).
+Requirements: JDK 21 and an Android SDK (compileSdk 36).
 
 ```bash
 ./gradlew :wear:assembleRelease
 adb install -r wear/build/outputs/apk/release/wear-release.apk
-adb shell cmd package compile -m speed -f dev.liji.mihome   # instant smoothness (optional)
+adb shell cmd package compile -m speed -f dev.liji.mihome   # optional: complete AOT compilation immediately
 ```
 
-Install the **release** build for daily wear: the `debuggable` flag alone disables enough ART optimization to make fast scrolling drop frames (measured A/B on the watch). A baseline profile is bundled, so the system will AOT‑compile the hot paths eventually — the `compile` line just makes it immediate. Use `assembleDebug` when you need `run-as` log access.
+The **release** build is recommended for daily use. The `debuggable` flag alone disables a substantial portion of ART optimization, causing dropped frames during fast scrolling (confirmed by on‑device A/B comparison). A baseline profile is bundled, so the system will eventually AOT‑compile the hot paths on its own; the `compile` command above merely makes this effect immediate. Use `assembleDebug` when `run-as` log access is required.
 
-> `settings.gradle.kts` uses Aliyun mirrors because `dl.google.com` is unreachable from mainland China. Outside China, move `google()` to the front.
+> This repository's `settings.gradle.kts` uses Aliyun mirrors, as `dl.google.com` is not directly reachable from mainland China. Users elsewhere may place `google()` first in the source list.
 
-## CLI
+## Command-line tool
 
-`./mi <cmd>` (the wrapper injects `JAVA_HOME`). Every subcommand runs on the desktop; no watch needed.
+`./mi <command>` (the wrapper injects `JAVA_HOME`). All subcommands run on the desktop; no watch connection is required.
 
 ```bash
-./mi login-qr                  # QR code in the terminal, scan with Mi Home
-./mi list                      # exactly what the watch list screen will show
-./mi scenes                    # manual scenes (automations excluded)
-./mi scene-run <sceneId>       # run a manual scene
+./mi login-qr                  # render a QR code in the terminal for the Mi Home app to scan
+./mi list                      # output identical to the watch list screen
+./mi scenes                    # list manual scenes (automations excluded)
+./mi scene-run <sceneId>       # run a given manual scene
 ```
 
 <details>
 <summary>Full command reference</summary>
 
 ```bash
-./mi devices                   # all devices with their real spec_type
-./mi controls-urn <urn>        # what toControls derives for a model
+./mi devices                   # list all devices with their real spec_type
+./mi controls-urn <urn>        # controls that toControls derives for a given model
 ./mi get <did> <siid> <piid>
 ./mi set <did> <siid> <piid> <value>
 ./mi action <did> <siid> <aiid> [args…]
-./mi audit [samples-per-category]   # coverage check against the full corpus
-./mi region [detect|<code>]    # inspect / probe / force account region
+./mi audit [samples-per-category]   # evaluate reduction coverage over the full corpus
+./mi region [detect|<code>]    # inspect / probe / set the account region
 ./mi raw <path> [json]         # raw endpoint response
 ```
 
-### Optional: bundling specs and icons
+### Optional: bundling specifications and icons
 
-On first launch the watch fetches the spec for every unknown model (3 concurrent, with progress). To skip that, bundle your own home's specs and native Mi Home icons into the APK before building:
+On first launch the watch fetches the specification for each unknown model (concurrency 3, with a progress indicator). To omit this step, bundle your own devices' specifications and native Mi Home icons into the APK before building:
 
 ```bash
 ./mi bundle wear/src/main/assets/spec $(./mi devices | grep -o 'urn:[^ ]*' | sort -u)
 ./mi icons  wear/src/main/assets/icon
 ```
 
-Both directories are `.gitignore`d — their content depends on your home. Everything still works without them: specs are fetched and cached at runtime, icons fall back to per‑category glyphs. Icons come from `home.miot-spec.com` at build time (`productId` has no official source), so the app never crawls third‑party sites at runtime.
+Both directories are listed in `.gitignore`, as their contents depend on the user's own devices. The application still functions without them: specifications are fetched and cached at runtime, and icons fall back to per‑category rendered glyphs. Icons are obtained from `home.miot-spec.com` at build time (`productId` has no official source), so the application accesses no third‑party site at runtime.
 
-</details>
+## Operating with any account
 
-## Works with your own devices out of the box
+The application contains no special handling tied to the author's environment:
 
-The app carries no trace of the author's home:
+- **Automatic region detection.** Login is global, but business APIs are partitioned by region (foreign prefixes `de.` / `sg.` / `us.` / `ru.` / `i2.` / `tw.`). A wrong region manifests as "login succeeds but no devices appear" — among the hardest failures to self‑diagnose — and is therefore not left to the user: after login, each region is probed and the first returning a non‑empty home list is adopted and persisted.
+- **All homes.** A single account bound to multiple residences is common; reading only the first home would render the remaining devices entirely invisible.
+- **Favorite initialization.** The first three switchable devices are favorited on first launch; the user's subsequent choices in the detail page take precedence thereafter.
+- **Session expiry.** On complete session expiry, the application returns directly to the login screen rather than remaining on an unrecoverable error.
+- **Explicit offline state.** On a failed refresh, "Offline · last known state" is shown atop the list; a tile unsynchronized for more than 30 minutes receives a faint marker. Stale state never masquerades as live state.
+- **Batched reads.** `prop/get` carries at most 80 properties per batch, so homes with many devices do not exceed the request‑body limit.
 
-- **Automatic region detection.** Login is global, but business APIs are per‑region (`de.` / `sg.` / `us.` / `ru.` / `i2.` / `tw.` abroad). A wrong region looks like "login OK but zero devices" — the hardest failure to self‑diagnose, so the user is never asked: each region is probed after login and the one returning a non‑empty home list wins, persisted.
-- **All homes.** Multiple properties per account are common; reading only the first would make the rest invisible.
-- **Favorites auto‑seeded** with the first 3 switchable devices; your ★ choices take over from there.
-- **A fully expired session** goes straight back to the login screen instead of stranding you on a cryptic error.
-- **Offline is labeled honestly** — a failed refresh shows "Offline · last known state"; tiles unsynced for 30+ min get a subtle dot. Stale state never impersonates live state.
-- **Batched `prop/get`** (80 properties per request) so large homes don't overflow the request body.
+## Limitations
 
-## Known limitations
+- **Multi‑input actions are unsupported.** Single‑input actions (choosing one value in an overlay) are supported; entering several inputs in sequence on a 33mm round display is too costly and is not implemented.
+- **No full two‑factor flow.** QR login is itself the second factor; on a captcha, use QR login.
+- **Some enumerated values have no official translation** (e.g. a speaker's `Stop` playback state) and are shown verbatim rather than speculatively translated.
+- **Scene execution reports only "sent."** A cloud `code:0` does not establish that a device acted, and there is nothing to read back, so no false confirmation is issued.
 
-- **Multi‑input actions are out of scope** — single‑input (pick one value) is supported; chaining several inputs isn't worth it on a 33mm round screen.
-- No full 2FA flow — QR login *is* the second factor; on a captcha, use QR.
-- Some enum values have no official translation (e.g. a speaker's `Stop`); shown as‑is, never invented.
-- Scene runs report only "sent" — cloud `code:0` doesn't prove devices moved, and there's nothing to read back, so no fake confirmations.
+## Provenance and compliance
 
-## Provenance & disclaimer
-
-Login and control use the same endpoints as the official Mi Home app, reconstructed from public materials and traffic captures; no third‑party project code is reused. Xiaomi's `LegalNotice` claims that using its cloud API outside Home Assistant constitutes infringement. This is an independent, non‑official project for personal use and study — not affiliated with or endorsed by Xiaomi. "Mi Home" / "Mijia" / "米家" are trademarks of Xiaomi; they appear here only to describe interoperability. Evaluate the legal situation for yourself before use.
+Login and control use the same endpoints as the official Mi Home app, reconstructed from public materials and traffic captures; no third‑party project code is reused. Xiaomi's `LegalNotice` asserts that using its cloud API outside Home Assistant constitutes infringement. This is an independent, non‑official implementation intended for personal use and study, with no affiliation with or endorsement by Xiaomi. "Mi Home," "Mijia," and "米家" are trademarks of Xiaomi and appear here solely to describe interoperability. Assess the applicable legal risk before use.
 
 Released under the [MIT License](LICENSE).
