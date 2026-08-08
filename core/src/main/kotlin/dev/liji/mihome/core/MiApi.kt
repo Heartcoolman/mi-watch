@@ -59,6 +59,20 @@ data class DeviceInfo(
     val isBle get() = did.startsWith("blt.")
 }
 
+/**
+ * 一个手动场景。
+ *
+ * 只有手动场景进得来：自动化（传感器/定时触发）在表上点一下毫无意义，而它们在数量上
+ * 是压倒性的——实测账号 13 个场景里只有 2 个是手动的。
+ */
+data class SceneInfo(
+    val id: String,
+    val name: String,
+    val homeId: Long,
+    /** 米家自己的「常用」标记，用来排序——它比创建时间更接近用户的实际偏好。 */
+    val commonUse: Boolean = false,
+)
+
 data class HomeInfo(
     val id: Long,
     val uid: Long,
@@ -225,6 +239,63 @@ class MiApi(private val store: Store, private val auth: MiAuth, var verbose: Boo
                 )
             }
 
+    /**
+     * 一个家庭的手动场景。
+     *
+     * 路径是四段的 gRPC-gateway 风格，`AppSceneService` 那一段不能省——公开资料里流传的
+     * `appgateway/miot/appsceneservice/AppGetHomeSceneList`、`AppGetSceneList`、`AppSceneRun`
+     * 一律 404；老的 `scene/list` / `v2/scene/list` 虽然还在（返回 code=0），但无论传什么参数
+     * 都恒返回空对象，是废弃端点。这三族全试过，只有这一条能拿到数据。
+     *
+     * home_id 必须是数字：这里跟 home_device_list 一致，而 gethome 返回的是字符串。
+     * 没有场景的家庭返回 `result: null`（不是空数组），所以 as? 之后要能落回空列表。
+     */
+    fun scenesOf(homeId: Long): List<SceneInfo> {
+        val res = post(
+            "appgateway/miot/appsceneservice/AppSceneService/GetSceneList",
+            bodyOf { put("home_id", homeId) },
+        )["result"] as? JsonObject ?: return emptyList()
+
+        return (res["scene_info_list"] as? JsonArray).orEmpty().mapNotNull { e ->
+            val o = e.jsonObject
+            // 手动场景的判据是触发器来源为 user（key 为 user.click）。
+            // 不用记录里的 `type` 字段——它对手动和自动化都是 0，分不出来。
+            val manual = (o["scene_trigger"]?.jsonObject?.get("triggers") as? JsonArray).orEmpty()
+                .any { it.jsonObject["src"]?.jsonPrimitive?.contentOrNull == "user" }
+            // 停用的场景在米家 App 里也是隐藏的，跟着藏
+            val enabled = o["enable"]?.jsonPrimitive?.booleanOrNull ?: true
+            if (!manual || !enabled) return@mapNotNull null
+            SceneInfo(
+                id = o["scene_id"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null,
+                name = o["name"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+                homeId = homeId,
+                commonUse = o["common_use"]?.jsonPrimitive?.booleanOrNull ?: false,
+            )
+        }
+    }
+
+    /** 全部家庭的手动场景。和设备一样：只读第一个家庭会让其余房产的场景完全不存在。 */
+    fun scenes(): List<SceneInfo> = homes().flatMap { scenesOf(it.id) }
+
+    /**
+     * 执行一个手动场景。
+     *
+     * 方法名必须是 `NewRunScene`。同一个服务下的 `RunScene` 也存在、也返回
+     * `code=0 result=true`，**但设备纹丝不动**——实测跑完连读三次，目标灯的回读全是旧值。
+     * 照着那个返回值写代码，得到的是一个「点了没反应却报成功」的功能。
+     *
+     * `scene_type` 必填且为 2：漏掉报 `code=-8 invaild scene_type`，填 1 报 HTTP 500
+     * `sceneInfo is empty`，填 3 又回到 -8。它和场景记录里那个恒为 0 的 `type` 字段无关。
+     */
+    fun runScene(id: String): Boolean = post(
+        "appgateway/miot/appsceneservice/AppSceneService/NewRunScene",
+        bodyOf {
+            put("scene_id", id)
+            put("scene_type", 2)
+            put("trigger_key", "user.click")
+        },
+    ).code() == 0
+
     fun setBool(did: String, siid: Int, piid: Int, value: Boolean): Boolean =
         propSet(listOf(PropRef(did, siid, piid) to JsonPrimitive(value))).code() == 0
 
@@ -246,6 +317,10 @@ class MiApi(private val store: Store, private val auth: MiAuth, var verbose: Boo
     /** 触发一个无入参动作。返回是否成功——:wear 不接触 JSON，所以这里就把信封拆掉。 */
     fun invokeAction(did: String, siid: Int, aiid: Int): Boolean =
         action(did, siid, aiid).code() == 0
+
+    /** 带一个入参的动作。单入参时 in 就是 [值]，顺序问题不存在。 */
+    fun invokeAction(did: String, siid: Int, aiid: Int, arg: Int): Boolean =
+        action(did, siid, aiid, listOf(JsonPrimitive(arg))).code() == 0
 
     fun propSet(items: List<Pair<PropRef, JsonElement>>): JsonObject = post(
         "miotspec/prop/set",

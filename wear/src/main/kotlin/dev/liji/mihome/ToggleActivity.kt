@@ -42,6 +42,7 @@ class ToggleActivity : ComponentActivity() {
         // 先乐观改缓存并重绘，用户抬手时 Tile 已经是新状态了
         TileState.put(this, did, target)
         MiTileService.requestUpdate(this)
+        MiComplicationService.requestUpdate(this)
 
         lifecycleScope.launch {
             runCatching {
@@ -56,11 +57,13 @@ class ToggleActivity : ComponentActivity() {
                     Flog.w("Tile 写入被拒绝 $did，回滚缓存")
                     TileState.put(this@ToggleActivity, did, item.on)
                     MiTileService.requestUpdate(this@ToggleActivity)
+                    MiComplicationService.requestUpdate(this@ToggleActivity)
                 }
             }.onFailure { e ->
                 Flog.e("Tile 写入失败 $did", e)
                 TileState.put(this@ToggleActivity, did, item.on)
                 MiTileService.requestUpdate(this@ToggleActivity)
+                MiComplicationService.requestUpdate(this@ToggleActivity)
             }
             // 做完再退：过早 finish 有被系统回收进程、请求半路夭折的风险。
             // 界面是透明的，用户看不到这一秒。

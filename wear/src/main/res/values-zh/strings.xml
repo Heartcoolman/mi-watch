@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">米家</string>
+    <string name="tile_scenes_label">米家场景</string>
+    <string name="complication_label">米家开关</string>
+
+    <string name="qr_generating">正在生成二维码…</string>
+    <string name="qr_scan_hint">用米家 App 扫码</string>
+    <string name="qr_expired">二维码已过期，点这里重来</string>
+    <string name="qr_desc">登录二维码</string>
+    <string name="qr_regen">重新生成</string>
+    <string name="login_failed">登录失败：%1$s</string>
+
+    <string name="loading">载入中…</string>
+    <string name="no_devices">没有设备\n可能是账号区域不对</string>
+    <string name="refresh">刷新</string>
+    <string name="refreshing">刷新中</string>
+    <string name="sign_out">退出</string>
+    <string name="offline">离线</string>
+    <string name="stale_banner">离线 · 显示上次状态</string>
+    <string name="progress_specs">读取设备型号 %1$d/%2$d</string>
+
+    <string name="device_missing">设备不存在</string>
+    <string name="on">开</string>
+    <string name="off">关</string>
+    <string name="favorite">收藏</string>
+    <string name="fav_pill">☆ 收藏</string>
+    <string name="faved_pill">★ 已收藏</string>
+    <string name="no_readable">这个设备没有可读的属性</string>
+
+    <string name="net_unavailable">网络不可用（表可能在休眠）</string>
+    <string name="rejected_write">写入被拒绝</string>
+    <string name="rejected_action">动作被拒绝</string>
+    <string name="rejected_scene">执行被拒绝</string>
+
+    <string name="unknown_error">未知错误</string>
+    <string name="ungrouped">未分组</string>
+
+    <string name="tile_login_first">先打开米家 App 登录</string>
+    <string name="tile_no_scenes">还没有手动场景\n在米家 App 里创建</string>
+</resources>

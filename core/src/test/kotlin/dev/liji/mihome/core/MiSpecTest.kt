@@ -30,11 +30,20 @@ class MiSpecTest {
         valueRange = range,
     )
 
-    private fun svc(iid: Int, cat: String, props: List<SpecProperty>) = SpecService(
+    private fun svc(iid: Int, cat: String, props: List<SpecProperty>, actions: List<SpecAction> = emptyList()) =
+        SpecService(
+            iid = iid,
+            type = "urn:miot-spec-v2:service:$cat:00000001:xiaomi-x:1",
+            description = cat,
+            properties = props,
+            actions = actions,
+        )
+
+    private fun act(iid: Int, cat: String, inputs: List<Int> = emptyList()) = SpecAction(
         iid = iid,
-        type = "urn:miot-spec-v2:service:$cat:00000001:xiaomi-x:1",
+        type = "urn:miot-spec-v2:action:$cat:00000001:xiaomi-x:1",
         description = cat,
-        properties = props,
+        inputs = inputs,
     )
 
     /** 桌灯：主服务 light(siid 2) 只有 on + brightness；siid 6 是 focus-mode，也带一个 on。 */
@@ -67,6 +76,85 @@ class MiSpecTest {
             )),
         ),
     )
+
+    /**
+     * 扫地机：无入参 start-sweep、单入参（枚举）set-suction、
+     * 单入参但无约束的 goto-room（丢弃）、多入参的 timed-clean（丢弃）。
+     */
+    private val vacuum = SpecInstance(
+        type = "urn:miot-spec-v2:device:vacuum:0000A006:dreame-p2008:1",
+        services = listOf(
+            svc(
+                2, "vacuum",
+                props = listOf(
+                    prop(1, "status", "uint8", listOf("read"), values = listOf(SpecValue(1, "扫地中"))),
+                    prop(
+                        2, "suction-level", "uint8", listOf("read"),
+                        values = listOf(SpecValue(0, "安静"), SpecValue(1, "标准"), SpecValue(2, "强力")),
+                    ),
+                    prop(3, "room-id", "uint8", listOf()), // 既无 value-list 也无 value-range
+                ),
+                actions = listOf(
+                    act(1, "start-sweep"),
+                    act(2, "set-suction", inputs = listOf(2)),
+                    act(3, "goto-room", inputs = listOf(3)),
+                    act(4, "timed-clean", inputs = listOf(2, 3)),
+                ),
+            ),
+        ),
+    )
+
+    @Test
+    fun arglessActionSurvivesWithNullArg() {
+        val a = vacuum.toControls().filterIsInstance<Control.Act>().single { it.aiid == 1 }
+        assertNull(a.arg)
+        assertTrue(a.quick)
+    }
+
+    /** v3.1 的核心：单入参动作按入参属性的 value-list 生成可选档。 */
+    @Test
+    fun singleInputActionCarriesEnumOptions() {
+        val a = vacuum.toControls().filterIsInstance<Control.Act>().single { it.aiid == 2 }
+        val arg = a.arg ?: error("set-suction 应带入参描述")
+        assertEquals(2, arg.piid)
+        assertEquals(listOf(0 to "安静", 1 to "标准", 2 to "强力"), arg.options)
+    }
+
+    /** 入参没有任何约束就没法在表上选，丢弃；多入参同样丢弃。 */
+    @Test
+    fun unconstrainedAndMultiInputActionsAreDropped() {
+        val acts = vacuum.toControls().filterIsInstance<Control.Act>().map { it.aiid }
+        assertTrue(3 !in acts, "无约束入参的动作应被丢弃")
+        assertTrue(4 !in acts, "多入参动作应被丢弃")
+    }
+
+    @Test
+    fun rangeOptionsEnumerateOrSample() {
+        // 4 档全列
+        assertEquals(listOf(1, 2, 3, 4), rangeOptions(1.0, 4.0, 1.0, null).map { it.first })
+        // 101 档采样成 8 个，两端必在
+        val sampled = rangeOptions(0.0, 100.0, 1.0, "percentage").map { it.first }
+        assertEquals(8, sampled.size)
+        assertEquals(0, sampled.first())
+        assertEquals(100, sampled.last())
+        // 非整数范围不可枚举
+        assertTrue(rangeOptions(0.5, 1.5, 0.1, null).isEmpty())
+        // 量程不是步进整倍数时，采样的最后一档不得越过 max（0–101 步 3 曾采出 102）
+        val ragged = rangeOptions(0.0, 101.0, 3.0, null).map { it.first }
+        assertTrue(ragged.all { it <= 101 }, "采样值越界: $ragged")
+        assertEquals(99, ragged.last())
+        // 覆盖不到标准色温档的量程要落回普通枚举，不能返回空
+        assertTrue(rangeOptions(2000.0, 2600.0, 100.0, "kelvin").isNotEmpty())
+    }
+
+    /** 弹层档位：色温走 4 个标准档，普通整数范围走枚举/采样，不再是空白板。 */
+    @Test
+    fun rangePresetsNotEmptyForNonKelvin() {
+        val temp = ac.toControls().filterIsInstance<Control.Range>().single { it.siid == 2 && it.piid == 3 }
+        assertEquals((16..30).toList(), temp.presets().map { it.first })
+        val kelvin = Control.Range(2, 3, "色温", true, true, 0, 2700.0, 6500.0, 1.0, "kelvin")
+        assertEquals(listOf(2700, 3500, 5000, 6500), kelvin.presets().map { it.first })
+    }
 
     @Test
     fun powerComesFromPrimaryServiceOnly() {

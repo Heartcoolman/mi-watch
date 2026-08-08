@@ -191,6 +191,13 @@ sealed interface Control {
         fun clamp(v: Double): Double = v.coerceIn(min, max)
 
         fun stepped(v: Double): Double = clamp(min + Math.round((v - min) / step) * step)
+
+        /**
+         * 弹层选择用的档位。色温给 4 个标准档（2700 到 6500 连续滑没有可用精度），
+         * 其余整数范围枚举或采样。曾经的 bug：非色温 Range 的 chip 点开弹层，
+         * 选项按色温档过滤后是空的——整层白板。
+         */
+        fun presets(): List<Pair<Int, String>> = rangeOptions(min, max, step, unit)
     }
 
     data class Choice(
@@ -217,15 +224,20 @@ sealed interface Control {
         val cat: String? = null,
     ) : Prop
 
+    /** 单入参动作的入参描述：从这些档里选一个作为唯一入参发出去。 */
+    data class ActArg(val piid: Int, val options: List<Pair<Int, String>>)
+
     /**
-     * 无入参的动作，点一下就发。
+     * 动作。无入参的点一下就发；单入参的先弹层选值再发。
      *
      * 加它是为了红外伪设备：万能遥控器模拟出来的空调/电视/风扇，属性要么只写要么为空，
      * **全部功能都挂在 action 上**——不支持 action 就等于这些设备在表上完全是空的，
      * 它们在 457 个型号的扫描里占了「零控件」的一大半。扫地机的 start-sweep、
      * 投影仪的方向键也是同一类。
      *
-     * 只收 `in` 为空的：带入参的动作要先让用户填值，33mm 屏上不值得做。
+     * 单入参只收「入参属性带枚举或整数范围约束」的：表上的交互是从列表里选一个，
+     * 自由输入（字符串、浮点）在 33mm 圆屏上没有可用的输入法。多入参不做——
+     * 连填几个值的链路太长，收益不抵复杂度。
      */
     data class Act(
         override val siid: Int,
@@ -234,7 +246,39 @@ sealed interface Control {
         override val primary: Boolean,
         override val quick: Boolean,
         override val rank: Int = 1,
+        /** null＝无入参。非空时点击应先弹选择层。 */
+        val arg: ActArg? = null,
     ) : Control
+}
+
+/**
+ * 把整数范围枚举成可选档。步数少就全列（扫地机吸力 1..4），
+ * 多则等距取 8 档再按步进取整（音量 0..100）。非整数范围返回空——不可枚举。
+ */
+internal fun rangeOptions(min: Double, max: Double, step: Double, unit: String?): List<Pair<Int, String>> {
+    if (step <= 0 || max < min) return emptyList()
+    if (step % 1.0 != 0.0 || min % 1.0 != 0.0) return emptyList()
+    // 色温优先标准 4 档：等距取出来的 3243K 没人认识。但量程覆盖不到任何标准档时
+    // （2000–2600K 的暖光灯带）要落回普通枚举——返回空会让弹层变成一块白板
+    if (unit == "kelvin") {
+        val std = listOf(2700, 3500, 5000, 6500).filter { it >= min && it <= max }
+        if (std.isNotEmpty()) return std.map { it to "${it}K" }
+    }
+    val count = ((max - min) / step).toInt() + 1
+    // 上限 16 是为了让空调 16–30° 这样的量程逐度全列——弹层可以滚动，
+    // 全列比采样好用；音量 0–100 这种才需要采样
+    val values = if (count <= 16) {
+        (0 until count).map { (min + it * step).toInt() }
+    } else {
+        // 网格内的最大可取值。量程不是步进的整倍数时，四舍五入会把最后一档
+        // 顶出 max（0–101 步 3 → 102），发出去被云端拒
+        val maxOnGrid = min + Math.floor((max - min) / step) * step
+        (0 until 8).map { i ->
+            val raw = min + (max - min) * i / 7
+            (min + Math.round((raw - min) / step) * step).coerceAtMost(maxOnGrid).toInt()
+        }.distinct()
+    }
+    return values.map { it to (trimNum(it.toDouble()) + shortUnit(unit)) }
 }
 
 /** multiLanguage 的键是三位补零的：service:002:property:002:valuelist:000 */
@@ -334,9 +378,14 @@ fun SpecInstance.toControls(
         }
 
         for (a in svc.actions) {
-            // 带入参的动作要先填值，表上不做
-            if (a.inputs.isNotEmpty()) continue
             val cat = a.type.urnCategory() ?: continue
+            // 单入参且入参可枚举的收进来（空调设温、扫地机选吸力）；
+            // 多入参、或入参没有枚举/整数范围约束的仍然不做——表上没有可用的自由输入。
+            val arg = when (a.inputs.size) {
+                0 -> null
+                1 -> actArg(svc, a.inputs[0], t) ?: continue
+                else -> continue
+            }
             val label = t.action(svc.iid, a.iid) ?: a.description.ifEmpty { cat }
             val full = if (isPrimary) label else "$svcLabel · $label"
             // 遥控类服务整个都算常用——红外空调的全部功能就是这几个动作
@@ -344,6 +393,7 @@ fun SpecInstance.toControls(
             out += Control.Act(
                 svc.iid, a.iid, full, isPrimary, quick,
                 rank = if (cat in POWER_ACTIONS) 0 else 1,
+                arg = arg,
             )
         }
     }
@@ -355,6 +405,23 @@ fun SpecInstance.toControls(
             .thenByDescending { it.primary },
     )
     return sorted.capQuick()
+}
+
+/**
+ * 单入参动作的入参描述。入参 piid 指向同一 service 里的属性，
+ * 档位从它的 value-list（原样 + 翻译）或 value-range（枚举/采样）来。
+ */
+private fun actArg(svc: SpecService, piid: Int, t: Translations): Control.ActArg? {
+    val p = svc.properties.firstOrNull { it.iid == piid } ?: return null
+    val opts = when {
+        p.valueList != null -> p.valueList.mapIndexed { i, v ->
+            v.value to (t.value(svc.iid, p.iid, i) ?: v.description)
+        }
+        p.valueRange != null && p.valueRange.size >= 3 ->
+            rangeOptions(p.valueRange[0], p.valueRange[1], p.valueRange[2], p.unit)
+        else -> null
+    }
+    return opts?.takeIf { it.isNotEmpty() }?.let { Control.ActArg(piid, it) }
 }
 
 /**

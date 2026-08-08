@@ -38,7 +38,7 @@ class MiTileService : TileService() {
         requestParams: RequestBuilders.TileRequest,
     ): ListenableFuture<TileBuilders.Tile> {
         val items = TileState.load(this)
-        val layout = layout(items, requestParams.deviceConfiguration)
+        val layout = layout(items, requestParams.deviceConfiguration, TileState.isStale(this))
         return immediate(
             TileBuilders.Tile.Builder()
                 .setResourcesVersion(RESOURCES_VERSION)
@@ -66,12 +66,13 @@ class MiTileService : TileService() {
     private fun layout(
         items: List<TileState.Item>,
         device: DeviceParametersBuilders.DeviceParameters,
+        stale: Boolean,
     ): LayoutElementBuilders.LayoutElement {
         val column = LayoutElementBuilders.Column.Builder()
 
         if (items.isEmpty()) {
             column.addContent(
-                Text.Builder(this, "先打开米家 App 登录")
+                Text.Builder(this, getString(R.string.tile_login_first))
                     .setTypography(Typography.TYPOGRAPHY_CAPTION1)
                     .setColor(androidx.wear.protolayout.ColorBuilders.argb(Hyper.Muted.toArgb()))
                     .build(),
@@ -82,7 +83,7 @@ class MiTileService : TileService() {
                 val line = LayoutElementBuilders.Row.Builder()
                 row.forEachIndexed { c, item ->
                     if (c > 0) line.addContent(hgap(GAP))
-                    line.addContent(cell(item, device))
+                    line.addContent(cell(item, device, stale))
                 }
                 // 落单的补个等宽空位，否则这一行会被居中排版拽偏
                 if (row.size < GRID_COLS) {
@@ -100,10 +101,15 @@ class MiTileService : TileService() {
             .build()
     }
 
-    /** 一个格子：整块可点，颜色表达开关，名字最多两行。 */
+    /**
+     * 一个格子：整块可点，颜色表达开关，名字最多两行。
+     * [stale] 时名字下压一个淡点：状态取自 30 分钟前的缓存，可能已经不是现状。
+     * 点它照常能开关（目标状态取反不依赖新旧），所以只提示、不拦。
+     */
     private fun cell(
         item: TileState.Item,
         device: DeviceParametersBuilders.DeviceParameters,
+        stale: Boolean,
     ): LayoutElementBuilders.LayoutElement {
         // 点击拉起透明的 ToggleActivity 执行写入——Tile 自身不能跑任意代码
         val click = ModifiersBuilders.Clickable.Builder()
@@ -160,18 +166,52 @@ class MiTileService : TileService() {
                     .build(),
             )
             .addContent(
-                LayoutElementBuilders.Text.Builder()
-                    .setText(if (item.on == null) "${item.name} —" else item.name)
-                    .setMaxLines(2)
-                    .setMultilineAlignment(LayoutElementBuilders.TEXT_ALIGN_CENTER)
-                    .setOverflow(LayoutElementBuilders.TEXT_OVERFLOW_ELLIPSIZE_END)
-                    .setFontStyle(
-                        LayoutElementBuilders.FontStyle.Builder()
-                            .setSize(androidx.wear.protolayout.DimensionBuilders.sp(11f))
-                            .setWeight(LayoutElementBuilders.FONT_WEIGHT_MEDIUM)
-                            .setColor(androidx.wear.protolayout.ColorBuilders.argb(fg))
+                LayoutElementBuilders.Column.Builder()
+                    .addContent(
+                        LayoutElementBuilders.Text.Builder()
+                            .setText(if (item.on == null) "${item.name} —" else item.name)
+                            .setMaxLines(2)
+                            .setMultilineAlignment(LayoutElementBuilders.TEXT_ALIGN_CENTER)
+                            .setOverflow(LayoutElementBuilders.TEXT_OVERFLOW_ELLIPSIZE_END)
+                            .setFontStyle(
+                                LayoutElementBuilders.FontStyle.Builder()
+                                    .setSize(androidx.wear.protolayout.DimensionBuilders.sp(11f))
+                                    .setWeight(LayoutElementBuilders.FONT_WEIGHT_MEDIUM)
+                                    .setColor(androidx.wear.protolayout.ColorBuilders.argb(fg))
+                                    .build(),
+                            )
                             .build(),
                     )
+                    .apply {
+                        if (stale) {
+                            addContent(gap(3f))
+                            // protolayout 没有圆形图元，圆角撑满的小方块就是圆点
+                            addContent(
+                                LayoutElementBuilders.Box.Builder()
+                                    .setWidth(androidx.wear.protolayout.DimensionBuilders.dp(4f))
+                                    .setHeight(androidx.wear.protolayout.DimensionBuilders.dp(4f))
+                                    .setModifiers(
+                                        ModifiersBuilders.Modifiers.Builder()
+                                            .setBackground(
+                                                ModifiersBuilders.Background.Builder()
+                                                    .setColor(
+                                                        androidx.wear.protolayout.ColorBuilders.argb(
+                                                            (if (on) Hyper.OnAccent else Hyper.Muted).copy(alpha = 0.55f).toArgb(),
+                                                        ),
+                                                    )
+                                                    .setCorner(
+                                                        ModifiersBuilders.Corner.Builder()
+                                                            .setRadius(androidx.wear.protolayout.DimensionBuilders.dp(2f))
+                                                            .build(),
+                                                    )
+                                                    .build(),
+                                            )
+                                            .build(),
+                                    )
+                                    .build(),
+                            )
+                        }
+                    }
                     .build(),
             )
             .build()

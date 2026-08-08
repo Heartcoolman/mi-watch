@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 默认英文：开源默认面向全球用户；中文在 values-zh。
+     spec 属性名不在这里——它们跟随系统语言由 miot-spec 的 multiLanguage 提供。 -->
+<resources>
+    <string name="app_name">Mi Home Watch</string>
+    <string name="tile_scenes_label">Scenes</string>
+    <string name="complication_label">Mi Home switch</string>
+
+    <!-- 登录 -->
+    <string name="qr_generating">Generating QR code…</string>
+    <string name="qr_scan_hint">Scan with Mi Home app</string>
+    <string name="qr_expired">QR expired, tap to retry</string>
+    <string name="qr_desc">Login QR code</string>
+    <string name="qr_regen">Regenerate</string>
+    <string name="login_failed">Login failed: %1$s</string>
+
+    <!-- 设备列表 -->
+    <string name="loading">Loading…</string>
+    <string name="no_devices">No devices\nAccount region may be wrong</string>
+    <string name="refresh">Refresh</string>
+    <string name="refreshing">Refreshing</string>
+    <string name="sign_out">Sign out</string>
+    <string name="offline">offline</string>
+    <string name="stale_banner">Offline · last known state</string>
+    <string name="progress_specs">Loading device models %1$d/%2$d</string>
+
+    <!-- 详情 -->
+    <string name="device_missing">Device not found</string>
+    <string name="on">On</string>
+    <string name="off">Off</string>
+    <string name="favorite">Favorite</string>
+    <string name="fav_pill">☆ Favorite</string>
+    <string name="faved_pill">★ Favorited</string>
+    <string name="no_readable">This device has nothing to read</string>
+
+    <!-- 错误 -->
+    <string name="net_unavailable">Network unavailable (watch may be dozing)</string>
+    <string name="rejected_write">write rejected</string>
+    <string name="rejected_action">action rejected</string>
+    <string name="rejected_scene">scene rejected</string>
+
+    <string name="unknown_error">Unknown error</string>
+    <string name="ungrouped">Ungrouped</string>
+
+    <!-- Tile -->
+    <string name="tile_login_first">Open the app and sign in first</string>
+    <string name="tile_no_scenes">No manual scenes yet\nCreate one in Mi Home app</string>
+</resources>

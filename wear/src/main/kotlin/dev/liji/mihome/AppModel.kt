@@ -2,6 +2,8 @@ package dev.liji.mihome
 
 import android.content.Context
 import android.graphics.Bitmap
+import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.Stable
 import android.graphics.Color
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
@@ -12,8 +14,10 @@ import dev.liji.mihome.core.MiApi
 import dev.liji.mihome.core.HomeInfo
 import dev.liji.mihome.core.MiAuth
 import dev.liji.mihome.core.MiQrExpiredException
+import dev.liji.mihome.core.MiSessionExpiredException
 import dev.liji.mihome.core.PropRef
 import dev.liji.mihome.core.PropValue
+import dev.liji.mihome.core.SceneInfo
 import dev.liji.mihome.core.Session
 import dev.liji.mihome.core.SpecInstance
 import dev.liji.mihome.core.clearSession
@@ -24,6 +28,8 @@ import dev.liji.mihome.core.urnCategory
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -68,6 +74,7 @@ sealed interface Screen {
 }
 
 /** 属性当前值。刻意不透出 JSON 类型，:wear 完全不依赖 kotlinx-serialization。 */
+@Immutable
 data class DevValue(val ok: Boolean, val bool: Boolean? = null, val num: Double? = null) {
     companion object {
         // asBool/asDouble 在逐项 code 非 0 时返回 null，离线设备不会渲染出陈旧值
@@ -75,6 +82,7 @@ data class DevValue(val ok: Boolean, val bool: Boolean? = null, val num: Double?
     }
 }
 
+@Immutable
 data class Dev(
     val did: String,
     val name: String,
@@ -93,18 +101,24 @@ data class Dev(
     val values: Map<PropKey, DevValue> = emptyMap(),
     val busy: Boolean = false,
 ) {
-    val power: Control.Toggle?
-        get() = controls.filterIsInstance<Control.Toggle>().firstOrNull { it.isPower }
+    // 这些派生值原来是 get()：写起来干净，代价是每次重组都要 filter/sort 一遍，
+    // 22 个磁贴乘起来就是滑动掉帧的底噪。Dev 不可变，改成每实例算一次的 lazy，
+    // 语义不变，计算从「每帧 N 次」变成「每次数据变化 1 次」。
+    val power: Control.Toggle? by lazy(LazyThreadSafetyMode.PUBLICATION) {
+        controls.filterIsInstance<Control.Toggle>().firstOrNull { it.isPower }
+    }
 
-    val on: Boolean? get() = power?.let { values[it.siid to it.piid]?.bool }
+    val on: Boolean? by lazy(LazyThreadSafetyMode.PUBLICATION) { power?.let { values[it.siid to it.piid]?.bool } }
 
     /** 表上默认只显示这些；其余是配置项，留给手机端。 */
-    val quick: List<Control> get() = controls.filter { it.quick }
+    val quick: List<Control> by lazy(LazyThreadSafetyMode.PUBLICATION) { controls.filter { it.quick } }
 
     /** 只读设备（温湿度计、人体存在、燃气…）：没有任何可写的常用控件。 */
     val readOnly: Boolean get() = quick.none { it !is Control.Readout }
 
-    val readouts: List<Control.Readout> get() = quick.filterIsInstance<Control.Readout>()
+    val readouts: List<Control.Readout> by lazy(LazyThreadSafetyMode.PUBLICATION) {
+        quick.filterIsInstance<Control.Readout>()
+    }
 
     /**
      * 列表页要读的属性：电源 + 前两个只读量。
@@ -116,29 +130,43 @@ data class Dev(
     fun valueOf(c: Control.Prop): DevValue? = values[c.siid to c.piid]
 
     /** 磁贴上那行读数。渲染和存快照共用同一份，避免两处算得不一样。 */
-    val summaryText: String? get() = summaryOf(this) ?: snapSummary
+    val summaryText: String? by lazy(LazyThreadSafetyMode.PUBLICATION) { summaryOf(this) ?: snapSummary }
 }
 
+@Immutable
 data class UiState(
     val screen: Screen = Screen.Loading,
     val devices: List<Dev> = emptyList(),
+    /** 手动场景，常用（米家的 common_use 标记）在前。自动化不在其中。 */
+    val scenes: List<SceneInfo> = emptyList(),
     /** 收藏的 did，有序。第一屏就是它们，零滚动。 */
     val favIds: List<String> = emptyList(),
     val error: String? = null,
     val busy: Boolean = false,
     /** 首次启动拉 spec 时的进度文案；平时为 null。 */
     val progress: String? = null,
+    /**
+     * 上次刷新失败，当前显示的是缓存/快照里的旧状态。
+     * 不标出来的话，Doze 掐网后满屏「看起来正常」的开关全是假的。
+     */
+    val stale: Boolean = false,
 ) {
-    val favorites: List<Dev> get() = favIds.mapNotNull { id -> devices.firstOrNull { it.did == id } }
+    // get() 版本的 byRoom 在合成期做 groupBy + 排序，且**每次读都全量重算**——
+    // 这是列表页每帧成本里最大的一块纯浪费。状态不可变，lazy 一次就够。
+    val favorites: List<Dev> by lazy(LazyThreadSafetyMode.PUBLICATION) {
+        favIds.mapNotNull { id -> devices.firstOrNull { it.did == id } }
+    }
 
     /** 非收藏设备按房间分组，房间顺序按设备数降序——设备多的房间更可能是你要找的。 */
-    val byRoom: List<Pair<String, List<Dev>>>
-        get() = devices.filter { it.did !in favIds }
-            .groupBy { it.room ?: "未分组" }
+    val byRoom: List<Pair<String, List<Dev>>> by lazy(LazyThreadSafetyMode.PUBLICATION) {
+        devices.filter { it.did !in favIds }
+            .groupBy { it.room.orEmpty() }
             .toList()
             .sortedByDescending { it.second.size }
+    }
 }
 
+@Stable
 class AppModel(private val app: Context) {
 
     /** 首屏收藏的容量。三张 52dp 卡片正好在 226dp 上居中排完，零滚动。 */
@@ -186,7 +214,13 @@ class AppModel(private val app: Context) {
     private val _state = MutableStateFlow(
         Snapshot.load(app).let { cached ->
             if (cached.isNotEmpty() && store.loadSession() != null) {
-                UiState(screen = Screen.Devices, devices = cached, favIds = loadFavorites())
+                UiState(
+                    screen = Screen.Devices,
+                    devices = cached,
+                    // 场景快照直接借 Tile 的缓存：两边要的都是 id+name，没必要再存一份
+                    scenes = SceneTileState.load(app).map { SceneInfo(it.id, it.name, 0L) },
+                    favIds = loadFavorites(),
+                )
             } else {
                 UiState(favIds = loadFavorites())
             }
@@ -195,6 +229,33 @@ class AppModel(private val app: Context) {
     val state: StateFlow<UiState> = _state.asStateFlow()
 
     private var loginJob: Job? = null
+
+    /**
+     * refresh / loadDetail 各持一个 Job，新请求启动前取消旧的。
+     * 不取消的话，快速进出详情页时旧请求的迟到响应会覆盖新状态——
+     * 和「调完音量自己跳回去」是同源问题，只是发生在导航而不是回读上。
+     */
+    private var refreshJob: Job? = null
+    private var detailJob: Job? = null
+
+    /**
+     * 错误的统一出口。会话彻底失效（passToken 也换不动了）唯一的出路是重新扫码，
+     * 直接送回登录页——甩一条「无 ssecurity」让用户反复点刷新是最差的结局。
+     * 协程取消不是错误，静默吞掉。
+     */
+    private fun reportError(e: Throwable, prefix: String = "") {
+        when (e) {
+            is kotlinx.coroutines.CancellationException -> Unit
+            is MiSessionExpiredException -> {
+                // 并发的几笔请求会一起撞上过期，每笔都 signOut 会反复吹掉刚生成的二维码
+                if (_state.value.screen !is Screen.Login) {
+                    Flog.w("会话已失效，回登录页")
+                    signOut()
+                }
+            }
+            else -> _state.value = _state.value.copy(error = prefix + friendly(e))
+        }
+    }
 
     fun start() {
         if (store.loadSession() != null) {
@@ -211,7 +272,7 @@ class AppModel(private val app: Context) {
 
     fun beginQrLogin() {
         loginJob?.cancel()
-        _state.value = UiState(screen = Screen.Login(null, "正在生成二维码…"), favIds = loadFavorites())
+        _state.value = UiState(screen = Screen.Login(null, app.getString(R.string.qr_generating)), favIds = loadFavorites())
         loginJob = scope.launch {
             runCatching {
                 withContext(Dispatchers.IO) {
@@ -222,7 +283,7 @@ class AppModel(private val app: Context) {
                         val ch = Flog.timed("qr-gen") { auth.startQrLogin() }
                         val bmp = qrBitmap(ch.qrData)
                         withContext(Dispatchers.Main) {
-                            _state.value = _state.value.copy(screen = Screen.Login(bmp, "用米家 App 扫码"))
+                            _state.value = _state.value.copy(screen = Screen.Login(bmp, app.getString(R.string.qr_scan_hint)))
                         }
                         Flog.timed("qr-poll") { auth.awaitQrScan(ch.lp) }
                     }
@@ -233,7 +294,7 @@ class AppModel(private val app: Context) {
                 refresh()
             }.onFailure { e ->
                 Flog.e("登录失败", e)
-                val hint = if (e is MiQrExpiredException) "二维码已过期，点这里重来" else "登录失败：${e.message}"
+                val hint = if (e is MiQrExpiredException) app.getString(R.string.qr_expired) else app.getString(R.string.login_failed, e.message.orEmpty())
                 _state.value = UiState(screen = Screen.Login(null, hint), favIds = loadFavorites())
             }
         }
@@ -261,7 +322,15 @@ class AppModel(private val app: Context) {
     }
 
     fun back() {
-        _state.value = _state.value.copy(screen = Screen.Devices, error = null)
+        // 离开详情页就取消它的加载：迟到的响应不该覆盖列表页刚刷出来的状态。
+        // busy 要在这里收掉——被取消的 loadDetail 不会再把它清掉，
+        // 不清的话「刷新」会永远显示成「刷新中」。刷新真在跑时以它为准。
+        detailJob?.cancel()
+        _state.value = _state.value.copy(
+            screen = Screen.Devices,
+            error = null,
+            busy = refreshJob?.isActive == true,
+        )
     }
 
     // ---------- 设备 ----------
@@ -271,19 +340,47 @@ class AppModel(private val app: Context) {
      * 冷启动的四段请求里 prop/get 独占约 1.2 秒，没必要让名字和图标陪着一起等。
      */
     fun refresh() {
-        scope.launch {
+        refreshJob?.cancel()
+        refreshJob = scope.launch {
             _state.value = _state.value.copy(busy = true, error = null)
             runCatching {
                 withContext(Dispatchers.IO) {
+                    // homes() 先跑一次占住缓存，否则下面两个并发分支会各发一次 gethome
+                    val hs = homes()
+                    // 场景和设备清单互不依赖，并行拉。场景失败不拖垮刷新——它只是少一行 chip，
+                    // 用 null 区分「拉失败」和「真没有」：失败保留旧场景，别让整行闪没。
+                    val scenesJob = async {
+                        runCatching { Flog.timed("scenes") { hs.flatMap { api.scenesOf(it.id) } } }
+                            .onFailure { Flog.w("场景拉取失败: ${it.message}") }
+                            .getOrNull()
+                            ?.sortedByDescending { it.commonUse }
+                    }
                     val devs = carryOver(buildDevices())
-                    withContext(Dispatchers.Main) { _state.value = _state.value.copy(devices = devs) }
-                    readProps(devs) { it.listProps }.also { finishLoad(it) }
+                    val scenes = scenesJob.await()
+                    withContext(Dispatchers.Main) {
+                        _state.value = _state.value.copy(
+                            devices = devs,
+                            scenes = scenes ?: _state.value.scenes,
+                        )
+                    }
+                    // 阻塞的 OkHttp 调用不理会取消，返回后要自查：被新一轮刷新顶掉的旧请求
+                    // 若继续执行 finishLoad，会拿更旧的数据覆盖 Tile 缓存和快照
+                    ensureActive()
+                    if (scenes != null) syncSceneTile(scenes)
+                    readProps(devs) { it.listProps }.also {
+                        ensureActive()
+                        finishLoad(it)
+                    }
                 }
             }
-                .onSuccess { _state.value = _state.value.copy(devices = it, busy = false) }
+                .onSuccess { _state.value = _state.value.copy(devices = keepBusyValues(it), busy = false, stale = false) }
                 .onFailure {
+                    // 被新一轮刷新取消的旧请求不该动任何状态
+                    if (it is kotlinx.coroutines.CancellationException) return@onFailure
                     Flog.e("刷新失败", it)
-                    _state.value = _state.value.copy(busy = false, error = friendly(it))
+                    // 刷新失败＝屏上是旧状态。标出来，别让快照冒充实时
+                    _state.value = _state.value.copy(busy = false, stale = true)
+                    reportError(it)
                 }
         }
     }
@@ -374,6 +471,20 @@ class AppModel(private val app: Context) {
         scope.launch { DeviceIcon.prewarm(app, devs.map { it.model }) }
     }
 
+    /**
+     * 刷新的回读可能比飞行中的写更旧：冷启动的 prop/get 在用户点开关**之前**就发出去了，
+     * 它带回来的是旧值，照单全收会把刚打开的灯在界面上打回关——和 write() 里
+     * 「调完音量自己跳回去」（75a0b28）同一类病，只是发生在刷新这条路上。
+     * busy=true 说明这台设备正有一笔写在途，它的值以写操作自己的回读为准。
+     */
+    private fun keepBusyValues(fresh: List<Dev>): List<Dev> {
+        val cur = _state.value.devices.associateBy { it.did }
+        return fresh.map { d ->
+            val c = cur[d.did]
+            if (c?.busy == true) d.copy(values = c.values, busy = true) else d
+        }
+    }
+
     /** 新一批设备沿用界面上已有的值（多半来自快照），避免刚画出来的磁贴又空一次。 */
     private fun carryOver(fresh: List<Dev>): List<Dev> {
         val old = _state.value.devices.associateBy { it.did }
@@ -401,22 +512,26 @@ class AppModel(private val app: Context) {
             },
         )
         MiTileService.requestUpdate(app)
+        MiComplicationService.requestUpdate(app)
     }
 
     private fun loadDetail(did: String) {
-        scope.launch {
+        detailJob?.cancel()
+        detailJob = scope.launch {
             _state.value = _state.value.copy(busy = true)
             runCatching {
                 withContext(Dispatchers.IO) {
-                    val dev = _state.value.devices.firstOrNull { it.did == did } ?: error("设备不存在")
+                    val dev = _state.value.devices.firstOrNull { it.did == did } ?: error(app.getString(R.string.device_missing))
                     readProps(listOf(dev)) { d -> d.quick.filterIsInstance<Control.Prop>() }.first()
                 }
             }.onSuccess { d ->
                 putDev(d)
                 _state.value = _state.value.copy(busy = false)
             }.onFailure {
+                if (it is kotlinx.coroutines.CancellationException) return@onFailure
                 Flog.e("读取 $did 详情失败", it)
-                _state.value = _state.value.copy(busy = false, error = friendly(it))
+                _state.value = _state.value.copy(busy = false)
+                reportError(it)
             }
         }
     }
@@ -454,17 +569,60 @@ class AppModel(private val app: Context) {
      * 触发一个无入参动作。动作是即发即忘：没有可回读的值，也就没有乐观更新和回滚。
      * 红外空调、投影仪遥控、扫地机启停走的都是这条路。
      */
+    /**
+     * 执行一个手动场景。和 invoke() 一样即发即忘：场景没有可回读的状态，
+     * 也就没有乐观更新和回滚。UI 侧只给触觉和短暂高亮，不报「成功」——
+     * 云端 code=0 只说明请求被接受，设备到底动没动没有凭据。
+     */
+    fun runScene(s: SceneInfo) {
+        scope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    val ok = Flog.timed("scene ${s.name}") { api.runScene(s.id) }
+                    check(ok) { app.getString(R.string.rejected_scene) }
+                }
+            }.onFailure { e ->
+                Flog.e("场景失败 ${s.id}", e)
+                reportError(e, "${s.name}：")
+            }
+        }
+    }
+
+    /** 场景 Tile 的缓存。列表本身就是常用在前，Tile 取前几个正好。 */
+    private fun syncSceneTile(scenes: List<SceneInfo>) {
+        SceneTileState.save(app, scenes.map { SceneTileState.Item(it.id, it.name) })
+        SceneTileService.requestUpdate(app)
+    }
+
     fun invoke(did: String, c: Control.Act) {
         val dev = _state.value.devices.firstOrNull { it.did == did } ?: return
         scope.launch {
             runCatching {
                 withContext(Dispatchers.IO) {
                     val ok = Flog.timed("action $did ${c.siid}.${c.aiid}") { api.invokeAction(did, c.siid, c.aiid) }
-                    check(ok) { "动作被拒绝" }
+                    check(ok) { app.getString(R.string.rejected_action) }
                 }
             }.onFailure { e ->
                 Flog.e("动作失败 $did ${c.siid}.${c.aiid}", e)
-                _state.value = _state.value.copy(error = "${dev.name}：${friendly(e)}")
+                reportError(e, "${dev.name}：")
+            }
+        }
+    }
+
+    /** 带一个入参的动作：值来自选择层的档位。同样即发即忘，没有可回读的状态。 */
+    fun invokeArg(did: String, c: Control.Act, value: Int) {
+        val dev = _state.value.devices.firstOrNull { it.did == did } ?: return
+        scope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    val ok = Flog.timed("action $did ${c.siid}.${c.aiid}($value)") {
+                        api.invokeAction(did, c.siid, c.aiid, value)
+                    }
+                    check(ok) { app.getString(R.string.rejected_action) }
+                }
+            }.onFailure { e ->
+                Flog.e("动作失败 $did ${c.siid}.${c.aiid}($value)", e)
+                reportError(e, "${dev.name}：")
             }
         }
     }
@@ -488,7 +646,7 @@ class AppModel(private val app: Context) {
                             is Control.Readout -> error("只读属性不可写")
                         }
                     }
-                    check(ok) { "写入被拒绝" }
+                    check(ok) { app.getString(R.string.rejected_write) }
                     // 回读一到两次。快设备一次就确认，慢的再给一次机会。
                     var seen: DevValue? = null
                     for (wait in listOf(700L, 1500L)) {
@@ -504,11 +662,12 @@ class AppModel(private val app: Context) {
                 if (c == dev.power) {
                     TileState.put(app, did, v.bool)
                     MiTileService.requestUpdate(app)
+                    MiComplicationService.requestUpdate(app)
                 }
             }.onFailure { e ->
                 Flog.e("写入失败 $did ${c.siid}.${c.piid}", e)
                 putValue(did, c, prev, busy = false)
-                _state.value = _state.value.copy(error = "${dev.name}：${friendly(e)}")
+                reportError(e, "${dev.name}：")
             }
         }
     }
@@ -588,7 +747,19 @@ class AppModel(private val app: Context) {
 
     fun signOut() {
         store.clearSession()
-        _state.value = UiState(favIds = loadFavorites())
+        // 退出的主场景是换账号：上一个账号的快照、Tile、场景、收藏全部作废。
+        // 留着的话，新账号会在 Tile 上看见别人家的设备名，点下去还会对着无权的
+        // did/scene_id 发请求；进程内的家庭缓存和区域探测标记同样要归零。
+        Snapshot.save(app, emptyList())
+        TileState.save(app, emptyList())
+        SceneTileState.save(app, emptyList())
+        store.set(KEY_FAV, null)
+        homesCache = null
+        regionProbed = false
+        MiTileService.requestUpdate(app)
+        SceneTileService.requestUpdate(app)
+        MiComplicationService.requestUpdate(app)
+        _state.value = UiState()
         beginQrLogin()
     }
 
@@ -676,7 +847,7 @@ class AppModel(private val app: Context) {
                         .onFailure { Flog.w("spec 取用失败 $t: ${it.message}") }
                     if (missing > 0) {
                         _state.value = _state.value.copy(
-                            progress = "读取设备型号 ${done.incrementAndGet()}/${types.size}",
+                            progress = app.getString(R.string.progress_specs, done.incrementAndGet(), types.size),
                         )
                     }
                 }
@@ -690,8 +861,8 @@ class AppModel(private val app: Context) {
 
     /** UnknownHostException 在这台表上最常见的成因是深度 Doze 掐了网络，直接说人话。 */
     private fun friendly(e: Throwable): String = when {
-        e.message?.contains("Unable to resolve host") == true -> "网络不可用（表可能在休眠）"
-        else -> e.message ?: e::class.simpleName ?: "未知错误"
+        e.message?.contains("Unable to resolve host") == true -> app.getString(R.string.net_unavailable)
+        else -> e.message ?: e::class.simpleName ?: app.getString(R.string.unknown_error)
     }
 
     private fun qrBitmap(data: String, size: Int = 360): Bitmap {

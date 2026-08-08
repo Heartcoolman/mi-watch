@@ -5,7 +5,6 @@ import android.view.WindowManager
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
@@ -26,6 +25,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -40,6 +40,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -60,12 +61,14 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.input.rotary.onRotaryScrollEvent
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -87,6 +90,7 @@ import androidx.wear.compose.material3.TimeText
 import androidx.wear.compose.material3.TimeTextDefaults
 import androidx.wear.compose.material3.timeTextCurvedText
 import dev.liji.mihome.core.Control
+import dev.liji.mihome.core.SceneInfo
 import dev.liji.mihome.core.render
 import dev.liji.mihome.core.shortLabel
 import kotlin.math.abs
@@ -124,7 +128,7 @@ fun App(model: AppModel) {
                     is Screen.Devices -> DeviceScreen(s, model)
                     is Screen.Detail -> {
                         val dev = s.devices.firstOrNull { it.did == screen.did }
-                        if (dev == null) Centered { Text("设备不存在", color = Hyper.Muted) }
+                        if (dev == null) Centered { Text(stringResource(R.string.device_missing), color = Hyper.Muted) }
                         else DetailScreen(dev, s, model)
                     }
                 }
@@ -185,7 +189,7 @@ private fun LoginScreen(screen: Screen.Login, model: AppModel) {
     if (bmp != null) {
         BrightAndAwake()
         Box(Modifier.fillMaxSize().background(Color.White), contentAlignment = Alignment.Center) {
-            Image(bmp.asImageBitmap(), contentDescription = "登录二维码", modifier = Modifier.size(170.dp))
+            Image(bmp.asImageBitmap(), contentDescription = stringResource(R.string.qr_desc), modifier = Modifier.size(170.dp))
         }
     } else {
         Centered {
@@ -202,7 +206,7 @@ private fun LoginScreen(screen: Screen.Login, model: AppModel) {
                     color = Hyper.OnSurface,
                 )
                 Pill(
-                    text = "重新生成",
+                    text = stringResource(R.string.qr_regen),
                     accent = accentOf(null),
                     filled = true,
                     onClick = { model.beginQrLogin() },
@@ -259,46 +263,125 @@ private fun DeviceList(state: UiState, model: AppModel, listState: ScalingLazyLi
         horizontalAlignment = Alignment.CenterHorizontally,
         rotaryScrollableBehavior = RotaryScrollableDefaults.behavior(listState),
     ) {
+        // 刷新失败时明说「这是旧状态」。不标的话，Doze 掐网后满屏正常颜色的开关全是假的
+        if (state.stale) {
+            item(key = "stale") {
+                Text(
+                    stringResource(R.string.stale_banner),
+                    color = Hyper.Muted, fontSize = 10.sp,
+                    modifier = Modifier.padding(bottom = 2.dp),
+                )
+            }
+        }
+
+        if (state.scenes.isNotEmpty()) {
+            item(key = "scenes") { SceneRow(state.scenes, model) }
+        }
+
         tileRows(state.favorites, model)
 
         if (state.devices.isEmpty()) {
-            item {
+            item(key = "empty") {
                 Text(
                     // 空列表最常见的成因是账号在海外区域而请求发去了国服。
                     // 自动探测已经跑过一轮，还是空就得让用户知道往哪儿看。
-                    state.progress ?: if (state.busy) "载入中…" else "没有设备\n可能是账号区域不对",
+                    state.progress ?: stringResource(if (state.busy) R.string.loading else R.string.no_devices),
                     color = Hyper.Muted, fontSize = 13.sp, textAlign = TextAlign.Center,
                     modifier = Modifier.padding(horizontal = 30.dp),
                 )
             }
         } else if (state.progress != null) {
-            item { Text(state.progress, color = Hyper.Muted, fontSize = 11.sp) }
+            item(key = "progress") { Text(state.progress, color = Hyper.Muted, fontSize = 11.sp) }
         }
 
         state.byRoom.forEach { (room, devs) ->
-            item { SectionHeader(room, devs.size) }
+            item(key = "room:$room") { SectionHeader(room.ifEmpty { stringResource(R.string.ungrouped) }, devs.size) }
             tileRows(devs, model)
         }
 
-        item {
+        item(key = "actions") {
             Row(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.padding(top = 10.dp),
             ) {
                 Pill(
-                    text = if (state.busy) "刷新中" else "刷新",
+                    text = stringResource(if (state.busy) R.string.refreshing else R.string.refresh),
                     accent = accentOf(null), filled = false, onClick = { model.refresh() },
                 )
-                Pill(text = "退出", accent = accentOf(null), filled = false, onClick = { model.signOut() })
+                Pill(text = stringResource(R.string.sign_out), accent = accentOf(null), filled = false, onClick = { model.signOut() })
             }
         }
+    }
+}
+
+/**
+ * 场景 chip 行，排在收藏磁贴之上——「离家」这一下换来的是一串设备各就各位，
+ * 比任何单设备都值得抢第一排。横向滚动，常用（米家 common_use）在前。
+ *
+ * 点击只给触觉 + 短暂高亮，不报「执行成功」：云端 code=0 只说明请求被接受，
+ * 设备到底动没动没有可回读的凭据，报得比实际确定就是撒谎。
+ */
+@Composable
+private fun SceneRow(scenes: List<SceneInfo>, model: AppModel) {
+    val haptics = LocalHapticFeedback.current
+    var fired by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(fired) {
+        if (fired != null) {
+            delay(900)
+            fired = null
+        }
+    }
+    Row(
+        modifier = Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 20.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        scenes.forEach { s ->
+            ScenePill(
+                name = s.name,
+                fired = fired == s.id,
+                onClick = {
+                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                    fired = s.id
+                    model.runScene(s)
+                },
+            )
+        }
+    }
+}
+
+@Composable
+private fun ScenePill(name: String, fired: Boolean, onClick: () -> Unit) {
+    val interaction = remember { MutableInteractionSource() }
+    val acc = accentOf(null)
+    val fill by animateFloatAsState(if (fired) 1f else 0f, label = "sceneFill")
+    Box(
+        modifier = Modifier
+            .height(34.dp)
+            .widthIn(max = 132.dp)
+            .pressScale(interaction)
+            .clip(RoundedCornerShape(17.dp))
+            .background(Hyper.SurfaceHi)
+            .clickable(interactionSource = interaction, indication = null, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(Modifier.fillMaxSize().alpha(fill).background(acc.horizontal))
+        Text(
+            "▸ $name",
+            color = if (fired) Hyper.OnAccent else Hyper.OnSurface,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(horizontal = 11.dp),
+        )
     }
 }
 
 /** 两两成行。落单的补一个等宽空位，免得最后一个被居中排版拽到中间。 */
 private fun ScalingLazyListScope.tileRows(devs: List<Dev>, model: AppModel) {
     devs.chunked(2).forEach { pair ->
-        item {
+        // 行首 did 当 key：刷新后设备增减/换序时，没动的行不重建，滚动位置也稳
+        item(key = pair.first().did) {
             Row(horizontalArrangement = Arrangement.spacedBy(Dim.TileGap)) {
                 pair.forEach { d -> DeviceTile(d, model) }
                 if (pair.size == 1) Spacer(Modifier.width(Dim.TileW))
@@ -340,10 +423,8 @@ private fun DeviceTile(d: Dev, model: AppModel) {
         animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
         label = "tileFill",
     )
-    val fg by animateColorAsState(
-        targetValue = if (on) Hyper.OnAccent else Hyper.OnSurface,
-        label = "tileFg",
-    )
+    // 文字色直接从 fill 推：一个磁贴一个动画对象就够，22 个磁贴少掉 22 个 animator
+    val fg = lerp(Hyper.OnSurface, Hyper.OnAccent, fill)
 
     Box(
         modifier = Modifier
@@ -431,7 +512,9 @@ private fun DeviceIconOrGlyph(d: Dev, glyphColor: Color, iconSize: Dp, glyphSize
  * 现在传感器是一等公民，22 个设备里一半没有开关，再报这句就是满屏噪音，
  * 而且把真正该显示的读数挤掉了。
  */
-private fun offlineNote(d: Dev): String? = if (d.power != null && d.on == null) "离线" else null
+@Composable
+private fun offlineNote(d: Dev): String? =
+    if (d.power != null && d.on == null) stringResource(R.string.offline) else null
 
 // ---------- 设备详情 ----------
 
@@ -445,8 +528,11 @@ private fun offlineNote(d: Dev): String? = if (d.power != null && d.on == null) 
 @Composable
 private fun DetailScreen(dev: Dev, state: UiState, model: AppModel) {
     val acc = accentOf(dev.category)
-    val hero = heroRange(dev)
-    var picking by remember { mutableStateOf<Control.Prop?>(null) }
+    val heros = heroRanges(dev)
+    // 设备一换索引就归零，否则上一台的第 2 个量会错位到这一台
+    var heroIdx by remember(dev.did) { mutableStateOf(0) }
+    val hero = heros.getOrNull(heroIdx.coerceAtMost(heros.lastIndex))
+    var picking by remember { mutableStateOf<Control?>(null) }
     val faved = dev.did in state.favIds
 
     BackHandler { if (picking != null) picking = null else model.back() }
@@ -470,6 +556,14 @@ private fun DetailScreen(dev: Dev, state: UiState, model: AppModel) {
             textAlign = TextAlign.Center,
         )
 
+        // 多个可拖量（空调：温度 + 风速）才显示切换器；单量设备一像素不变
+        if (heros.size > 1) {
+            HeroSwitcher(
+                heros, heroIdx.coerceAtMost(heros.lastIndex), acc,
+                modifier = Modifier.align(Alignment.TopCenter).padding(top = 31.dp),
+            ) { heroIdx = it }
+        }
+
         Row(
             modifier = Modifier.align(Alignment.Center),
             verticalAlignment = Alignment.CenterVertically,
@@ -484,7 +578,7 @@ private fun DetailScreen(dev: Dev, state: UiState, model: AppModel) {
                 onCommit = { v -> hero?.let { model.write(dev.did, it, DevValue(true, num = v)) } },
             )
             Spacer(Modifier.width(Dim.ColGap))
-            SideColumn(dev, acc, hero, faved, model) { picking = it }
+            SideColumn(dev, acc, heros, faved, model) { picking = it }
         }
 
         // 只读量走底部状态行而不是右列 chip：它们点不动，不该跟模式/风速抢那三个可见槽位。
@@ -510,8 +604,8 @@ private fun DetailScreen(dev: Dev, state: UiState, model: AppModel) {
  * 所以要记住最后一次的控件，让淡出的那帧还有内容可画。
  */
 @Composable
-private fun PickerLayer(dev: Dev, picking: Control.Prop?, acc: Accent, model: AppModel, onClose: () -> Unit) {
-    var last by remember { mutableStateOf<Control.Prop?>(null) }
+private fun PickerLayer(dev: Dev, picking: Control?, acc: Accent, model: AppModel, onClose: () -> Unit) {
+    var last by remember { mutableStateOf<Control?>(null) }
     if (picking != null) last = picking
     AnimatedVisibility(
         visible = picking != null,
@@ -523,15 +617,53 @@ private fun PickerLayer(dev: Dev, picking: Control.Prop?, acc: Accent, model: Ap
     ) {
         val c = picking ?: last ?: return@AnimatedVisibility
         PickerOverlay(dev, c, acc, onPick = { v ->
-            model.write(dev.did, c, DevValue(true, num = v.toDouble()))
+            when (c) {
+                // 带入参的动作：选出的档就是那个唯一入参
+                is Control.Act -> model.invokeArg(dev.did, c, v)
+                is Control.Prop -> model.write(dev.did, c, DevValue(true, num = v.toDouble()))
+            }
             onClose()
         }, onDismiss = onClose)
     }
 }
 
-/** 主控件＝主服务里第一个连续量。色温不算：跨度 2700–6500，滑起来没有可用精度。 */
-private fun heroRange(d: Dev): Control.Range? =
-    d.quick.filterIsInstance<Control.Range>().firstOrNull { !it.isKelvin && it.primary }
+/**
+ * 可拖的主控件们＝主服务里的连续量。色温不算：跨度 2700–6500，滑起来没有可用精度。
+ * 多于一个时（空调：温度 + 风速）标题下出现切换器。
+ */
+private fun heroRanges(d: Dev): List<Control.Range> =
+    d.quick.filterIsInstance<Control.Range>().filter { !it.isKelvin && it.primary }
+
+/** hero 切换器：一行小标签，点谁滑块就变成谁。 */
+@Composable
+private fun HeroSwitcher(
+    heros: List<Control.Range>,
+    current: Int,
+    acc: Accent,
+    modifier: Modifier = Modifier,
+    onSelect: (Int) -> Unit,
+) {
+    Row(modifier = modifier, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+        heros.forEachIndexed { i, r ->
+            val active = i == current
+            Text(
+                shortLabel(r.label),
+                color = if (active) acc.light else Hyper.Muted,
+                fontSize = 10.sp,
+                fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
+                maxLines = 1,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(9.dp))
+                    .background(if (active) Hyper.SurfaceHi else Color.Transparent)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                    ) { onSelect(i) }
+                    .padding(horizontal = 7.dp, vertical = 2.dp),
+            )
+        }
+    }
+}
 
 /**
  * 竖滑块：拖动调值，点击开关。
@@ -666,7 +798,7 @@ private fun HeroSlider(
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Text(
-                text = if (range != null && shown != null) heroText(shown, range) else if (on) "开" else "关",
+                text = if (range != null && shown != null) heroText(shown, range) else stringResource(if (on) R.string.on else R.string.off),
                 color = Color.White,
                 fontSize = if (range != null) 25.sp else 21.sp,
                 fontWeight = FontWeight.SemiBold,
@@ -703,14 +835,14 @@ private fun heroText(v: Double, c: Control.Range): String = c.render(v)
 private fun SideColumn(
     dev: Dev,
     acc: Accent,
-    hero: Control.Range?,
+    heros: List<Control.Range>,
     faved: Boolean,
     model: AppModel,
-    onPick: (Control.Prop) -> Unit,
+    onPick: (Control) -> Unit,
 ) {
     val scroll = rememberScrollState()
-    // 主开关已经并进滑块的点击，不再单列一项
-    val rest = dev.quick.filter { it != hero && !(it is Control.Toggle && it.isPower) }
+    // 主开关已经并进滑块的点击；全部 hero 都归切换器管，右列不再重复
+    val rest = dev.quick.filter { it !in heros && !(it is Control.Toggle && it.isPower) }
 
     Column(
         modifier = Modifier.width(Dim.ChipW).height(Dim.HeroH).verticalScroll(scroll),
@@ -724,27 +856,29 @@ private fun SideColumn(
                     accent = acc, active = false, onClick = { onPick(c) },
                 )
 
+                // presets 为空（小数步进的量程枚举不出来）就别开弹层——一块白板不如只读显示
                 is Control.Range -> Chip(
                     label = shortLabel(c.label),
                     value = dev.valueOf(c)?.num?.let { heroText(it, c) } ?: "—",
-                    accent = acc, active = false, onClick = { onPick(c) },
+                    accent = acc, active = false,
+                    onClick = if (c.presets().isEmpty()) null else ({ onPick(c) }),
                 )
 
                 // 摆风这类开关直接点切，没必要再弹一层
                 is Control.Toggle -> {
                     val v = dev.valueOf(c)?.bool == true
                     Chip(
-                        label = shortLabel(c.label), value = if (v) "开" else "关",
+                        label = shortLabel(c.label), value = stringResource(if (v) R.string.on else R.string.off),
                         accent = acc, active = v,
                         onClick = { model.write(dev.did, c, DevValue(true, bool = !v)) },
                     )
                 }
 
-                // 无入参动作：点一下就发，没有状态可显示
+                // 动作：无入参点一下就发；带入参先弹层选档（空调设温、扫地机吸力）
                 is Control.Act -> Chip(
-                    label = shortLabel(c.label), value = "▸",
+                    label = shortLabel(c.label), value = if (c.arg != null) "…" else "▸",
                     accent = acc, active = false,
-                    onClick = { model.invoke(dev.did, c) },
+                    onClick = { if (c.arg != null) onPick(c) else model.invoke(dev.did, c) },
                 )
 
                 is Control.Readout -> Unit // 见 readoutLine()
@@ -758,7 +892,7 @@ private fun SideColumn(
 @Composable
 private fun FavChip(faved: Boolean, acc: Accent, onClick: () -> Unit) {
     Chip(
-        label = "收藏",
+        label = stringResource(R.string.favorite),
         value = if (faved) "★" else "☆",
         accent = acc,
         active = faved,
@@ -772,7 +906,7 @@ private fun FavChip(faved: Boolean, acc: Accent, onClick: () -> Unit) {
  * 比列表页那两个摘要值多。
  */
 @Composable
-private fun SensorDetail(dev: Dev, acc: Accent, faved: Boolean, model: AppModel, onPick: (Control.Prop) -> Unit) {
+private fun SensorDetail(dev: Dev, acc: Accent, faved: Boolean, model: AppModel, onPick: (Control) -> Unit) {
     val listState = rememberScalingLazyListState()
     ScrollScreen(listState) {
         ScalingLazyColumn(
@@ -792,7 +926,7 @@ private fun SensorDetail(dev: Dev, acc: Accent, faved: Boolean, model: AppModel,
                 ReadoutRow(label, dev.valueOf(c)?.let { readoutText(c, it) } ?: "—", acc)
             }
             if (dev.readouts.isEmpty()) {
-                item { Text("这个设备没有可读的属性", color = Hyper.Muted, fontSize = 12.sp) }
+                item { Text(stringResource(R.string.no_readable), color = Hyper.Muted, fontSize = 12.sp) }
             }
 
             // 少数设备只读量之外还挂着零星可写项（天然气报警器的「远程消音」），一并摆出来
@@ -802,7 +936,7 @@ private fun SensorDetail(dev: Dev, acc: Accent, faved: Boolean, model: AppModel,
                     is Control.Toggle -> {
                         val v = dev.valueOf(c)?.bool == true
                         Pill(
-                            text = "${shortLabel(c.label)} ${if (v) "开" else "关"}",
+                            text = "${shortLabel(c.label)} ${stringResource(if (v) R.string.on else R.string.off)}",
                             accent = acc, filled = v,
                             onClick = { model.write(dev.did, c, DevValue(true, bool = !v)) },
                             modifier = Modifier.padding(horizontal = 26.dp).fillMaxWidth(),
@@ -811,21 +945,23 @@ private fun SensorDetail(dev: Dev, acc: Accent, faved: Boolean, model: AppModel,
                     is Control.Act -> Pill(
                         text = "▸ ${shortLabel(c.label)}",
                         accent = acc, filled = false,
-                        onClick = { model.invoke(dev.did, c) },
+                        onClick = { if (c.arg != null) onPick(c) else model.invoke(dev.did, c) },
                         modifier = Modifier.padding(horizontal = 26.dp).fillMaxWidth(),
                     )
 
-                    is Control.Prop -> Pill(
-                        text = shortLabel(c.label),
-                        accent = acc, filled = false,
-                        onClick = { onPick(c) },
-                        modifier = Modifier.padding(horizontal = 26.dp).fillMaxWidth(),
-                    )
+                    is Control.Prop -> if (c !is Control.Range || c.presets().isNotEmpty()) {
+                        Pill(
+                            text = shortLabel(c.label),
+                            accent = acc, filled = false,
+                            onClick = { onPick(c) },
+                            modifier = Modifier.padding(horizontal = 26.dp).fillMaxWidth(),
+                        )
+                    } else Unit
                 }
             }
             item {
                 Pill(
-                    text = if (faved) "★ 已收藏" else "☆ 收藏",
+                    text = stringResource(if (faved) R.string.faved_pill else R.string.fav_pill),
                     accent = acc, filled = faved,
                     onClick = { model.toggleFavorite(dev.did) },
                     modifier = Modifier.padding(horizontal = 30.dp).fillMaxWidth(),
@@ -878,7 +1014,7 @@ private fun Chip(
 ) {
     val interaction = remember { MutableInteractionSource() }
     val fill by animateFloatAsState(if (active) 1f else 0f, label = "chipFill")
-    val fg by animateColorAsState(if (active) Hyper.OnAccent else Hyper.OnSurface, label = "chipFg")
+    val fg = lerp(Hyper.OnSurface, Hyper.OnAccent, fill)
 
     Box(
         modifier = Modifier
@@ -922,17 +1058,21 @@ private fun Chip(
 @Composable
 private fun PickerOverlay(
     dev: Dev,
-    c: Control.Prop,
+    c: Control,
     acc: Accent,
     onPick: (Int) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val options = when (c) {
         is Control.Choice -> c.options
-        is Control.Range -> kelvinPresets(c)
+        // presets() 在 :core：色温 4 档，普通整数范围枚举/采样。
+        // 旧版这里只给色温档，非色温 Range 点开是一整层白板。
+        is Control.Range -> c.presets()
+        is Control.Act -> c.arg?.options.orEmpty()
         else -> emptyList()
     }
-    val cur = dev.valueOf(c)?.num?.roundToInt()
+    // 动作没有当前值可高亮——它是「做一次」，不是「处于某档」
+    val cur = (c as? Control.Prop)?.let { dev.valueOf(it)?.num?.roundToInt() }
     val listState = rememberScalingLazyListState()
 
     Box(
@@ -1045,7 +1185,5 @@ private fun BoxScope.ErrorToast(state: UiState, model: AppModel) {
     }
 }
 
-private fun kelvinPresets(c: Control.Range): List<Pair<Int, String>> =
-    listOf(2700, 3500, 5000, 6500).filter { it >= c.min && it <= c.max }.map { it to "${it}K" }
 
 

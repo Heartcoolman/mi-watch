@@ -11,6 +11,7 @@
 #   ./deploy.sh test [did] 无人值守触发一次真实的读+写
 #   ./deploy.sh log        把表上的文件日志抓回来
 #   ./deploy.sh session    把桌面会话注入到表里（登录走不通时的兜底）
+#   ./deploy.sh screenshot [out.png]  抓当前屏幕（README 配图、渲染核对用）
 set -euo pipefail
 
 DIR=$(cd "$(dirname "$0")" && pwd)
@@ -100,6 +101,14 @@ session)
     echo '✓ 会话已注入'
     ;;
 
+screenshot)
+    connect
+    OUT="${2:-shot-$(date +%H%M%S).png}"
+    # exec-out 直接吐二进制，经 ssh 管道落到 Mac 本地
+    nas "adb exec-out screencap -p" > "$OUT"
+    ls -lh "$OUT"
+    ;;
+
 *)
-    echo "用法: $0 [deploy|log|session]"; exit 1 ;;
+    echo "用法: $0 [deploy|test|log|session|screenshot]"; exit 1 ;;
 esac

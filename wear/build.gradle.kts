@@ -14,8 +14,8 @@ android {
         applicationId = "dev.liji.mihome"
         minSdk = 33
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1"
+        versionCode = 3
+        versionName = "3.0"
     }
 
     buildFeatures {
@@ -39,9 +39,26 @@ android {
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
+        // 发 GitHub Release 用。默认仍是 debug 签名——没有官方分发渠道，
+        // 换正式 key 只会让已装用户撞 INSTALL_FAILED_UPDATE_INCOMPATIBLE；
+        // 要自己的 key 的发布者在这里覆盖 signingConfig 即可。
+        release {
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            signingConfig = signingConfigs.getByName("debug")
+        }
     }
 
     sourceSets["main"].java.srcDir("src/main/kotlin")
+}
+
+composeCompiler {
+    // 流畅度的测量口径：哪个 composable 是 restartable-not-skippable、哪个参数 unstable，
+    // 全在 build/compose_reports 里。改稳定性之前先看它，别靠猜。
+    reportsDestination = layout.buildDirectory.dir("compose_reports")
+    metricsDestination = layout.buildDirectory.dir("compose_reports")
+    stabilityConfigurationFiles.add(rootProject.layout.projectDirectory.file("compose_stability.conf"))
 }
 
 dependencies {
@@ -63,6 +80,8 @@ dependencies {
     // Tile。protolayout 是独立于 Compose 的 builder 式布局系统，在系统进程里渲染，
     // 所以 Tile 的存在与否跟主界面用不用 Compose 无关。
     implementation("androidx.wear.tiles:tiles:1.6.1")
+    // 表盘 Complication 数据源。与 Tile 一样独立于主界面的 Compose
+    implementation("androidx.wear.watchface:watchface-complications-data-source:1.2.1")
     implementation("androidx.wear.protolayout:protolayout:1.4.1")
     implementation("androidx.wear.protolayout:protolayout-material:1.4.1")
 }

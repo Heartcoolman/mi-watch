@@ -15,6 +15,10 @@ import android.content.Context
 object TileState {
 
     private const val KEY = "tile_devices"
+    private const val KEY_AT = "tile_devices_at"
+
+    /** 距上次全量同步超过这个时长，Tile 上的状态就该标记为「可能过时」。 */
+    private const val STALE_MS = 30L * 60 * 1000
 
     data class Item(
         val did: String,
@@ -27,12 +31,28 @@ object TileState {
     )
 
     fun save(ctx: Context, items: List<Item>) {
+        saveRows(ctx, items)
+        // 只在全量同步时记时间。ToggleActivity 的单点 put 只证明一个设备是新的，
+        // 拿它刷新整体时间戳会把其余五格的陈旧洗白
+        AndroidStore(ctx).set(KEY_AT, System.currentTimeMillis().toString())
+    }
+
+    private fun saveRows(ctx: Context, items: List<Item>) {
         AndroidStore(ctx).set(
             KEY,
             items.joinToString(";") {
                 "${it.did}|${it.name}|${it.on?.let { b -> if (b) "1" else "0" } ?: "?"}|${it.siid}|${it.piid}|${it.category.orEmpty()}"
             },
         )
+    }
+
+    /**
+     * Tile 显示的状态是否已经太旧。真实新鲜度取决于上次开 App 的时间——
+     * onTileRequest 不发网络（也不该发），所以「过时」只能标出来，不能自己修。
+     */
+    fun isStale(ctx: Context): Boolean {
+        val at = AndroidStore(ctx).get(KEY_AT)?.toLongOrNull() ?: return false
+        return System.currentTimeMillis() - at > STALE_MS
     }
 
     fun load(ctx: Context): List<Item> =
@@ -51,6 +71,7 @@ object TileState {
         }
 
     fun put(ctx: Context, did: String, on: Boolean?) {
-        save(ctx, load(ctx).map { if (it.did == did) it.copy(on = on) else it })
+        // 不走 save()：单点更新只证明这一个设备是新的，不该刷新全量同步时间戳
+        saveRows(ctx, load(ctx).map { if (it.did == did) it.copy(on = on) else it })
     }
 }

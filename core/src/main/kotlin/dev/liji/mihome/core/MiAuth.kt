@@ -137,8 +137,12 @@ class MiAuth(private val store: Store) {
         jar.seed("cUserId", s.cUserId)
         jar.seed("passToken", s.passToken)
         val sl = serviceLogin()
-        val ssecurity = sl.ssecurity ?: throw MiException("刷新失败：无 ssecurity, code=${sl.code} ${sl.desc.orEmpty()}")
-        val location = sl.location ?: throw MiException("刷新失败：无 location, code=${sl.code}")
+        // passport 应答了但不给令牌 = passToken 也失效了，只能重新扫码。
+        // 网络类失败（IOException）不走这里——那是该重试的错，不是该登出的错。
+        val ssecurity = sl.ssecurity
+            ?: throw MiSessionExpiredException("会话已失效：无 ssecurity, code=${sl.code} ${sl.desc.orEmpty()}")
+        val location = sl.location
+            ?: throw MiSessionExpiredException("会话已失效：无 location, code=${sl.code}")
         val out = s.copy(ssecurity = ssecurity, serviceToken = harvestServiceToken(location))
         store.saveSession(out)
         return out

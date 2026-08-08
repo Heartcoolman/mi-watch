@@ -40,6 +40,8 @@ fun main(args: Array<String>) {
             "probe" -> probe()
             "homes" -> homes()
             "devices" -> devices()
+            "scenes" -> scenes()
+            "scene-run" -> sceneRun(rest)
             "get" -> get(rest)
             "set" -> set(rest)
             "action" -> action(rest)
@@ -189,6 +191,22 @@ private fun icons(a: List<String>) {
     println("\n$n/${models.distinct().size} 个图标已就位")
 }
 
+/** 表上会列出哪些场景，一模一样。自动化不在其中——点它没有意义。 */
+private fun scenes() {
+    val list = api.scenes()
+    if (list.isEmpty()) {
+        println("没有手动场景。（传感器/定时触发的自动化不算，它们不该出现在表上）")
+        return
+    }
+    list.forEach { println("${it.id}  ${if (it.commonUse) "★" else " "} ${it.name}") }
+}
+
+private fun sceneRun(a: List<String>) {
+    require(a.isNotEmpty()) { "用法: scene-run <sceneId>" }
+    // 场景没有可回读的状态，所以这里只能报「已下发」——设备到底动没动要自己看
+    println(if (api.runScene(a[0])) "✓ 已下发" else "✗ 被拒绝")
+}
+
 /** 原样打印任意端点的响应。类型化封装只挑走了用得上的字段，排查时需要看全貌。 */
 private fun raw(a: List<String>) {
     require(a.isNotEmpty()) { "用法: raw <path> [jsonBody]" }
@@ -205,6 +223,8 @@ private fun usage() = println(
       probe                          全栈证明：走一次签名接口 home/profile
       homes                          家庭与房间列表
       devices                        设备列表（含真实 spec_type urn）
+      scenes                         手动场景列表（自动化不列）
+      scene-run <sceneId>            执行一个手动场景
       get <did> <siid> <piid> [...]  批量读属性
       set <did> <siid> <piid> <val>  写属性
       action <did> <siid> <aiid>     调用 action
@@ -375,7 +395,10 @@ private fun controlsUrn(a: List<String>) {
             is Control.Range -> println("$tag 滑块   s${c.siid} p${c.piid}  ${c.label}  ${c.min}–${c.max} step ${c.step} ${c.unit.orEmpty()}")
             is Control.Choice -> println("$tag 选择   s${c.siid} p${c.piid}  ${c.label}  ${c.options.joinToString(" / ") { it.second }}")
             is Control.Readout -> println("$tag 只读   s${c.siid} p${c.piid}  ${c.label} ${c.unit.orEmpty()}")
-            is Control.Act -> println("$tag 动作   s${c.siid} a${c.aiid}  ${c.label}")
+            is Control.Act -> {
+                val arg = c.arg?.let { "  入参 p${it.piid}: ${it.options.joinToString(" / ") { o -> o.second }}" }.orEmpty()
+                println("$tag 动作   s${c.siid} a${c.aiid}  ${c.label}$arg")
+            }
         }
     }
 }

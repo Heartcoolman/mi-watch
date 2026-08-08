@@ -128,3 +128,11 @@ class MiNeedVerifyException(message: String, val captchaUrl: String?, val notifi
 
 /** 二维码已过期，应重新生成一张。 */
 class MiQrExpiredException : MiException("QR code expired")
+
+/**
+ * 会话彻底失效：serviceToken 过期且用 passToken 换新也失败了。
+ * 与一般网络错误分开抛，是因为两者的出路完全不同——网络错该重试，
+ * 这个错只能重新扫码。上层（表和 CLI）都要据此把用户送回登录，
+ * 而不是甩一条看不懂的报错让人反复点刷新。
+ */
+class MiSessionExpiredException(message: String) : MiException(message)
