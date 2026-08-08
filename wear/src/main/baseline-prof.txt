@@ -1,0 +1,10 @@
+# Baseline Profile：装包即预编译，不用等 JIT 慢慢热。
+#
+# 为什么需要它：真机 A/B 实测（Galaxy Watch 7）——debug 包快滑明显掉帧，
+# release 包好一些但仍卡，`cmd package compile -m speed` 全量 AOT 后彻底顺滑。
+# 也就是说卡顿的主因是冷代码走解释/JIT，而不是每帧渲染结构。
+#
+# 全应用通配：这个 App 的 release dex 只有 3.6M，没必要精挑热方法；
+# Compose 各库自带的 profile 会由 profileinstaller 一并安装。
+HSPLdev/liji/mihome/**->**(**)**
+Ldev/liji/mihome/**;

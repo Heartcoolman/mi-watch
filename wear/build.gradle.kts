@@ -82,6 +82,10 @@ dependencies {
     implementation("androidx.wear.tiles:tiles:1.6.1")
     // 表盘 Complication 数据源。与 Tile 一样独立于主界面的 Compose
     implementation("androidx.wear.watchface:watchface-complications-data-source:1.2.1")
+
+    // 把 baseline-prof.txt 和 Compose 各库自带的 profile 装进 ART——
+    // 真机实测快滑卡顿的主因是冷代码 JIT（全量 AOT 后彻底顺滑），见 baseline-prof.txt
+    implementation("androidx.profileinstaller:profileinstaller:1.4.1")
     implementation("androidx.wear.protolayout:protolayout:1.4.1")
     implementation("androidx.wear.protolayout:protolayout-material:1.4.1")
 }

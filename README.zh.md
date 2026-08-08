@@ -58,9 +58,14 @@ wear/   AppModel 单一状态持有者 · Ui Compose 界面 · MiTileService / S
 需要 JDK 21 和 Android SDK（compileSdk 36）。
 
 ```bash
-./gradlew :wear:assembleDebug      # 或用你自己的 gradle
-adb install -r -t wear/build/outputs/apk/debug/wear-debug.apk
+./gradlew :wear:assembleRelease    # 或用你自己的 gradle
+adb install -r wear/build/outputs/apk/release/wear-release.apk
+adb shell cmd package compile -m speed -f dev.liji.mihome   # 立刻顺滑（可选）
 ```
+
+日常佩戴装 **release** 包：仅 `debuggable` 标志本身就会禁用足量的 ART 优化，
+让快速滑动掉帧（真机 A/B 实测）。包里带了 baseline profile，系统迟早会自己把热路径
+AOT 掉——上面那行 `compile` 只是让它立刻生效。需要 `run-as` 取日志时再用 debug 包。
 
 > 本仓库的 `settings.gradle.kts` 用阿里云镜像。国内直连 `dl.google.com` 不通，境外用户可以把 `google()` 提到前面。
 

@@ -58,9 +58,15 @@ wear/   AppModel single state holder · Ui (Compose) · MiTileService / SceneTil
 Needs JDK 21 and an Android SDK (compileSdk 36).
 
 ```bash
-./gradlew :wear:assembleDebug      # or your own gradle
-adb install -r -t wear/build/outputs/apk/debug/wear-debug.apk
+./gradlew :wear:assembleRelease    # or your own gradle
+adb install -r wear/build/outputs/apk/release/wear-release.apk
+adb shell cmd package compile -m speed -f dev.liji.mihome   # instant smoothness (optional)
 ```
+
+Install the **release** build for daily use: the `debuggable` flag alone disables enough ART
+optimization to make fast scrolling drop frames (measured A/B on the watch). A baseline profile
+is bundled, so the system will AOT-compile the hot paths on its own eventually — the `compile`
+line above just makes it immediate. Use `assembleDebug` when you need `run-as` log access.
 
 > `settings.gradle.kts` uses Aliyun mirrors because `dl.google.com` is unreachable from mainland China. Outside China, move `google()` to the front.
 

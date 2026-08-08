@@ -7,7 +7,10 @@
 # 所以要先发现再连。
 #
 # 用法：
-#   ./deploy.sh            构建 + 等待手表 + 安装 + 启动
+#   ./deploy.sh            构建 + 等待手表 + 安装 + 启动（debug 包，run-as 能取日志）
+#   ./deploy.sh release    日常佩戴装这个：release 包 + 装完全量 AOT。
+#                          debuggable 标志会禁用 ART 大量优化，快滑掉帧的主因就是它；
+#                          代价是 run-as 取不到文件日志，只剩 logcat
 #   ./deploy.sh test [did] 无人值守触发一次真实的读+写
 #   ./deploy.sh log        把表上的文件日志抓回来
 #   ./deploy.sh session    把桌面会话注入到表里（登录走不通时的兜底）
@@ -76,6 +79,29 @@ deploy)
     echo '✓ 完成'
     ;;
 
+release)
+    echo '=== 构建 release ==='
+    JAVA_HOME="${JAVA_HOME:-/Applications/Android Studio.app/Contents/jbr/Contents/Home}" \
+        "$(ls -d "$HOME"/.gradle/wrapper/dists/gradle-8.14.5-bin/*/gradle-8.14.5/bin/gradle | head -1)" \
+        -p "$DIR" :wear:assembleRelease --console=plain -q
+    RAPK="$DIR/wear/build/outputs/apk/release/wear-release.apk"
+    ls -lh "$RAPK"
+
+    connect
+    echo '=== 传输 + 安装 ==='
+    /usr/bin/scp -q "$RAPK" "$NAS:/tmp/mi-watch.apk"
+    nas "adb install -r --no-streaming /tmp/mi-watch.apk"
+
+    # baseline profile 要等 bg-dexopt 才生效，装完直接全量 AOT 一步到位——
+    # dex 只有 3.6M，编译一次几十秒，换来的是立刻顺滑而不是「用几天就好了」
+    echo '=== 全量 AOT ==='
+    nas "adb shell cmd package compile -m speed -f $PKG" | tail -1
+
+    echo '=== 启动 ==='
+    nas "adb shell am start -n $PKG/.MainActivity"
+    echo '✓ 完成'
+    ;;
+
 test)
     # 无人值守地跑一次完整的读+写，结果看 ./deploy.sh log
     connect
@@ -110,5 +136,5 @@ screenshot)
     ;;
 
 *)
-    echo "用法: $0 [deploy|test|log|session|screenshot]"; exit 1 ;;
+    echo "用法: $0 [deploy|release|test|log|session|screenshot]"; exit 1 ;;
 esac
