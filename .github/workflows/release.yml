@@ -24,14 +24,11 @@ jobs:
 
       - uses: android-actions/setup-android@v3
 
-      # 同 ci.yml：setup-gradle 注入的 GRADLE_OPTS 会让 wrapper 拉不到分发包
-      - uses: actions/cache@v4
+      # 同 ci.yml：wrapper 那个 JVM 在 runner 上连不到 services.gradle.org，
+      # 由 action 备好 Gradle 本体
+      - uses: gradle/actions/setup-gradle@v4
         with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
-          restore-keys: gradle-${{ runner.os }}-
+          gradle-version: '8.14.5'
 
       # release 构建刻意仍用 debug 签名（理由见 wear/build.gradle.kts）。
       # 但 CI 的 runner 每次都是干净机器，AGP 会现生成一个 debug keystore——
@@ -56,7 +53,7 @@ jobs:
             echo "::warning::未配置 DEBUG_KEYSTORE_BASE64，本次 APK 由临时生成的 keystore 签名，装不到已有版本上（升级会撞 INSTALL_FAILED_UPDATE_INCOMPATIBLE）。"
           fi
 
-      - run: ./gradlew :core:test :wear:assembleRelease --console=plain
+      - run: gradle :core:test :wear:assembleRelease --console=plain
 
       - name: Rename APK
         run: |

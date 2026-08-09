@@ -31,20 +31,18 @@ jobs:
 
       - uses: android-actions/setup-android@v3
 
-      # 不用 gradle/actions/setup-gradle：它注入的 GRADLE_OPTS 会被 gradlew 脚本
-      # 一并传给下载分发包的那个 JVM，实测 wrapper 拉 gradle-8.14.5-bin.zip 时
-      # 150ms 内 Connection refused。缓存自己管，反正只有两个目录。
-      - uses: actions/cache@v4
+      # 由 action 备好 Gradle 本体，而不是让 wrapper 自己去下载。
+      # runner 上 wrapper 那个 JVM 连 services.gradle.org 会 150ms 内
+      # Connection refused（同一台机器上 curl 走 IPv4 拿得到 307，强制
+      # -Djava.net.preferIPv4Stack 也无效），而这个 action 用 Node 下载，走得通。
+      # 版本与 gradle-wrapper.properties 保持一致，本地仍用 ./gradlew。
+      - uses: gradle/actions/setup-gradle@v4
         with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
-          restore-keys: gradle-${{ runner.os }}-
+          gradle-version: '8.14.5'
 
       # :core:test 是归约规则的回归；assembleRelease 走 R8，能一并暴露
       # proguard 规则漏配这类只在压缩后才炸的问题
-      - run: ./gradlew :core:test :wear:assembleRelease --console=plain
+      - run: gradle :core:test :wear:assembleRelease --console=plain
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
