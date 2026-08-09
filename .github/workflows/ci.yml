@@ -14,12 +14,6 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    env:
-      # runner 的 IPv6 出网是拒绝的（实测 curl -6 拿到 000，IPv4 是 307），
-      # 而 JVM 解析到 AAAA 就直奔 IPv6，于是 wrapper 拉 gradle-8.14.5-bin.zip 时
-      # 150ms 内 Connection refused——快得不像网络问题，一开始很容易误判成别的。
-      # 依赖解析走的是同一条路，所以设在 job 级而不是单个 step 上。
-      GRADLE_OPTS: -Djava.net.preferIPv4Stack=true
     steps:
       - uses: actions/checkout@v4
 
@@ -31,27 +25,9 @@ jobs:
 
       - uses: android-actions/setup-android@v3
 
-      # runner 出网走 HTTP 代理时，curl 会自己读 https_proxy，JVM 不读——
-      # 于是同一台机器上 curl 拿得到 307，而 Gradle 一律 Connection refused。
-      # 把代理翻译成 JVM 的系统属性；没有代理变量时这一步什么也不做。
-      - name: Probe
-        run: |
-          U=https://dl.google.com/dl/android/maven2/com/android/application/com.android.application.gradle.plugin/8.13.2/com.android.application.gradle.plugin-8.13.2.pom
-          curl -sS -o /dev/null -w 'AGP pom via curl: %{http_code}\n' --max-time 20 "$U" || echo "curl FAIL"
-          cat > /tmp/P.java <<'EOJ'
-          import java.net.*;
-          public class P { public static void main(String[] a) throws Exception {
-            try (var s = new java.io.BufferedInputStream(URI.create(a[0]).toURL().openStream())) {
-              System.out.println("JVM ok, first bytes=" + s.read());
-            } catch (Exception e) { System.out.println("JVM " + e); }
-          }}
-          EOJ
-          java /tmp/P.java "$U" || true
-
       # 由 action 备好 Gradle 本体，而不是让 wrapper 自己去下载。
       # runner 上 wrapper 那个 JVM 连 services.gradle.org 会 150ms 内
-      # Connection refused（同一台机器上 curl 走 IPv4 拿得到 307，强制
-      # -Djava.net.preferIPv4Stack 也无效），而这个 action 用 Node 下载，走得通。
+      # Connection refused，而这个 action 用 Node 下载，走得通。
       # 版本与 gradle-wrapper.properties 保持一致，本地仍用 ./gradlew。
       - uses: gradle/actions/setup-gradle@v4
         with:

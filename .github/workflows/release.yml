@@ -11,9 +11,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    env:
-      # 同 ci.yml：runner 的 IPv6 出网被拒，JVM 不设这条就连不到分发包和依赖仓库
-      GRADLE_OPTS: -Djava.net.preferIPv4Stack=true
     steps:
       - uses: actions/checkout@v4
 
