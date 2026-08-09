@@ -19,6 +19,10 @@
     <string name="offline">离线</string>
     <string name="stale_banner">离线 · 显示上次状态</string>
     <string name="progress_specs">读取设备型号 %1$d/%2$d</string>
+    <string name="reorder_favorites">收藏排序</string>
+
+    <string name="reorder_title">收藏与磁贴的顺序</string>
+    <string name="done">完成</string>
 
     <string name="device_missing">设备不存在</string>
     <string name="on">开</string>

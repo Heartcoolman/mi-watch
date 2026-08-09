@@ -2,6 +2,7 @@ package dev.liji.mihome
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.os.SystemClock
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.Stable
 import android.graphics.Color
@@ -71,6 +72,8 @@ sealed interface Screen {
     data class Login(val qr: Bitmap?, val hint: String) : Screen
     data object Devices : Screen
     data class Detail(val did: String) : Screen
+    /** 收藏排序。顺序同时决定首屏和 Tile 六格的排列。 */
+    data object Favorites : Screen
 }
 
 /** 属性当前值。刻意不透出 JSON 类型，:wear 完全不依赖 kotlinx-serialization。 */
@@ -238,6 +241,9 @@ class AppModel(private val app: Context) {
     private var refreshJob: Job? = null
     private var detailJob: Job? = null
 
+    /** 上次刷新成功的时刻（elapsedRealtime，不受墙钟调整影响）。回前台时据此决定要不要重刷。 */
+    private var lastRefreshAt = 0L
+
     /**
      * 错误的统一出口。会话彻底失效（passToken 也换不动了）唯一的出路是重新扫码，
      * 直接送回登录页——甩一条「无 ssecurity」让用户反复点刷新是最差的结局。
@@ -266,6 +272,23 @@ class AppModel(private val app: Context) {
         } else {
             beginQrLogin()
         }
+    }
+
+    /**
+     * 回到前台。Activity 没被系统回收时抬腕回来只走 onResume，不经 onCreate，
+     * 所以在这之前屏上一直是离开时的状态——期间手机 App、自动化、别的家庭成员
+     * 都可能改过设备，而 stale 标记只在**刷新失败**时才亮，于是一屏看着正常的
+     * 颜色和读数全是过期的。这正是 README 里说要避免的「过期状态冒充实时状态」。
+     *
+     * 节流 30 秒：来回切表盘和 App 是常见动作，每次都发一轮请求会白耗蓝牙链路和电。
+     */
+    fun onResume() {
+        if (store.loadSession() == null) return
+        if (_state.value.screen is Screen.Login) return
+        if (refreshJob?.isActive == true) return
+        if (SystemClock.elapsedRealtime() - lastRefreshAt < RESUME_REFRESH_INTERVAL_MS) return
+        Flog.i("回前台，重新刷新")
+        refresh()
     }
 
     // ---------- 登录 ----------
@@ -321,6 +344,10 @@ class AppModel(private val app: Context) {
         loadDetail(did)
     }
 
+    fun openFavorites() {
+        _state.value = _state.value.copy(screen = Screen.Favorites, error = null)
+    }
+
     fun back() {
         // 离开详情页就取消它的加载：迟到的响应不该覆盖列表页刚刷出来的状态。
         // busy 要在这里收掉——被取消的 loadDetail 不会再把它清掉，
@@ -373,7 +400,10 @@ class AppModel(private val app: Context) {
                     }
                 }
             }
-                .onSuccess { _state.value = _state.value.copy(devices = keepBusyValues(it), busy = false, stale = false) }
+                .onSuccess {
+                    lastRefreshAt = SystemClock.elapsedRealtime()
+                    _state.value = _state.value.copy(devices = keepBusyValues(it), busy = false, stale = false)
+                }
                 .onFailure {
                     // 被新一轮刷新取消的旧请求不该动任何状态
                     if (it is kotlinx.coroutines.CancellationException) return@onFailure
@@ -716,6 +746,28 @@ class AppModel(private val app: Context) {
     }
 
     /**
+     * 在收藏里上移（delta=-1）或下移（delta=+1）一个设备。
+     * 越界不是错误——排序页的箭头到顶/到底就该点不动，这里再兜一次。
+     */
+    fun moveFavorite(did: String, delta: Int) {
+        val cur = _state.value.favIds.toMutableList()
+        val i = cur.indexOf(did)
+        if (i < 0) return
+        // 只和**界面上看得见的**那个收藏对调。收藏是本地持久化的，设备在米家侧被删掉后
+        // did 仍留在表里、但不在 devices 中，排序页也就不画它；直接按 ±1 取下标会和这个
+        // 隐形条目交换，表现是点一下什么都没动。跳过它们，找下一个还在的。
+        val known = _state.value.devices.mapTo(HashSet()) { it.did }
+        val j = generateSequence(i + delta) { it + delta }
+            .takeWhile { it in cur.indices }
+            .firstOrNull { cur[it] in known } ?: return
+        cur[i] = cur[j].also { cur[j] = cur[i] }
+        store.set(KEY_FAV, cur.joinToString(","))
+        _state.value = _state.value.copy(favIds = cur)
+        // Tile 的六格按收藏顺序排，所以每动一次都要同步过去
+        syncTile(_state.value.devices)
+    }
+
+    /**
      * 决定写入之后界面该显示什么。
      *
      * 回读的意义是「设备可能把值钳到别处」——空调设 33° 会被钳成 30°，不认这个就会显示错。
@@ -797,6 +849,9 @@ class AppModel(private val app: Context) {
 
         /** Tile 的格数：2 列 × 3 行。 */
         const val TILE_SLOTS = 6
+
+        /** 回前台后多久之内不重复刷新。 */
+        const val RESUME_REFRESH_INTERVAL_MS = 30_000L
     }
 
     /**

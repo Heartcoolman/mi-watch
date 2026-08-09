@@ -31,6 +31,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -46,6 +47,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -66,7 +68,9 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.input.rotary.onRotaryScrollEvent
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -77,6 +81,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
+import androidx.wear.compose.foundation.lazy.ScalingLazyColumnDefaults
 import androidx.wear.compose.foundation.lazy.ScalingLazyListScope
 import androidx.wear.compose.foundation.lazy.ScalingLazyListState
 import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
@@ -100,7 +105,14 @@ import kotlinx.coroutines.delay
 @Composable
 fun App(model: AppModel) {
     val s by model.state.collectAsStateWithLifecycle()
+    // 屏幕几何一次算好往下传。screenWidthDp 在手表上就是表盘直径（圆屏）或边长（方屏），
+    // isScreenRound 决定要不要为圆角收口让路——两者都不会在进程生命周期内变。
+    val cfg = LocalConfiguration.current
+    val dims = remember(cfg.screenWidthDp, cfg.isScreenRound) {
+        Dims(cfg.screenWidthDp.dp, cfg.isScreenRound)
+    }
     MaterialTheme {
+      CompositionLocalProvider(LocalDims provides dims) {
         Box(Modifier.fillMaxSize().background(Hyper.Bg)) {
             AnimatedContent(
                 targetState = s.screen,
@@ -131,10 +143,12 @@ fun App(model: AppModel) {
                         if (dev == null) Centered { Text(stringResource(R.string.device_missing), color = Hyper.Muted) }
                         else DetailScreen(dev, s, model)
                     }
+                    is Screen.Favorites -> FavoritesScreen(s, model)
                 }
             }
             ErrorToast(s, model)
         }
+      }
     }
 }
 
@@ -156,7 +170,13 @@ private fun Centered(content: @Composable () -> Unit) {
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { content() }
 }
 
-/** 顶部弧形时间。压成 Muted 色——纯黑背景上默认的白色太抢。 */
+/**
+ * 顶部弧形时间。压成 Muted 色——纯黑背景上默认的白色太抢。
+ *
+ * 方屏也照画：material3 1.6.2 的 TimeText 只收 CurvedScope，压根没有平排文本的变体，
+ * 自己另画一个就得连时间源和格式一起重做。曲线文字在方屏顶部沿内切圆排，
+ * 略弯但居中可读——不值得为这点观感多养一条只有方屏用户才走的代码路径。
+ */
 @Composable
 private fun HyperTimeText() {
     val style = TimeTextDefaults.timeTextStyle(color = Hyper.Muted)
@@ -164,7 +184,7 @@ private fun HyperTimeText() {
 }
 
 /**
- * 滚动屏的三件套：顶部弧形时间（滚动时淡出）、右缘滚动指示、圆屏收口。
+ * 滚动屏的三件套：顶部时间（滚动时淡出）、右缘滚动指示、圆屏收口。
  * TimeText 由 AppScaffold 承载，单独的 ScreenScaffold 不画它——实测过。
  * 所以每个滚动屏各包一层 AppScaffold，而不是放在 App 根部：
  * 详情页顶弧被设备名占用、登录页是二维码，都不该有时间，包在这里天然豁免。
@@ -174,6 +194,50 @@ private fun HyperTimeText() {
 private fun ScrollScreen(listState: ScalingLazyListState, content: @Composable () -> Unit) {
     AppScaffold(timeText = { HyperTimeText() }) {
         ScreenScaffold(scrollState = listState) { _ -> content() }
+    }
+}
+
+/**
+ * 列表容器。圆屏保持 ScalingLazyColumn 的默认行为——边缘缩小正是圆屏的收口来源。
+ *
+ * 方屏把这套关掉：那里没有要收的角，边缘缩放和淡出只是白白损失可读面积，
+ * 首项也不该被 autoCentering 顶到屏幕正中（方屏顶部是能用满的），
+ * 改成从顶部起排，留出时间行的高度。
+ */
+/**
+ * 列表状态。圆屏沿用默认的 initialCenterItemIndex=1——那是配合 autoCentering 的，
+ * 让第二项落在圆心、首项在其上方露出来。方屏关掉了 autoCentering，这个默认值就
+ * 退化成一段纯偏移，首项会被直接滚出屏幕外（收藏排序页上实测标题和第一个设备都没了）。
+ */
+@Composable
+private fun rememberWatchListState(): ScalingLazyListState =
+    if (LocalDims.current.round) rememberScalingLazyListState()
+    else rememberScalingLazyListState(initialCenterItemIndex = 0)
+
+@Composable
+private fun WatchColumn(
+    listState: ScalingLazyListState,
+    content: ScalingLazyListScope.() -> Unit,
+) {
+    if (LocalDims.current.round) {
+        ScalingLazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            state = listState,
+            horizontalAlignment = Alignment.CenterHorizontally,
+            rotaryScrollableBehavior = RotaryScrollableDefaults.behavior(listState),
+            content = content,
+        )
+    } else {
+        ScalingLazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            state = listState,
+            horizontalAlignment = Alignment.CenterHorizontally,
+            rotaryScrollableBehavior = RotaryScrollableDefaults.behavior(listState),
+            scalingParams = ScalingLazyColumnDefaults.scalingParams(edgeScale = 1f, edgeAlpha = 1f),
+            autoCentering = null,
+            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 26.dp),
+            content = content,
+        )
     }
 }
 
@@ -189,14 +253,18 @@ private fun LoginScreen(screen: Screen.Login, model: AppModel) {
     if (bmp != null) {
         BrightAndAwake()
         Box(Modifier.fillMaxSize().background(Color.White), contentAlignment = Alignment.Center) {
-            Image(bmp.asImageBitmap(), contentDescription = stringResource(R.string.qr_desc), modifier = Modifier.size(170.dp))
+            Image(
+                bmp.asImageBitmap(),
+                contentDescription = stringResource(R.string.qr_desc),
+                modifier = Modifier.size(LocalDims.current.qr),
+            )
         }
     } else {
         Centered {
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(14.dp),
-                modifier = Modifier.padding(horizontal = 24.dp),
+                modifier = Modifier.padding(horizontal = LocalDims.current.optionPad),
             ) {
                 Canvas(Modifier.size(20.dp)) { powerGlyph(Hyper.Muted) }
                 Text(
@@ -251,18 +319,13 @@ private fun BrightAndAwake() {
  */
 @Composable
 private fun DeviceScreen(state: UiState, model: AppModel) {
-    val listState = rememberScalingLazyListState()
+    val listState = rememberWatchListState()
     ScrollScreen(listState) { DeviceList(state, model, listState) }
 }
 
 @Composable
 private fun DeviceList(state: UiState, model: AppModel, listState: ScalingLazyListState) {
-    ScalingLazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        state = listState,
-        horizontalAlignment = Alignment.CenterHorizontally,
-        rotaryScrollableBehavior = RotaryScrollableDefaults.behavior(listState),
-    ) {
+    WatchColumn(listState) {
         // 刷新失败时明说「这是旧状态」。不标的话，Doze 掐网后满屏正常颜色的开关全是假的
         if (state.stale) {
             item(key = "stale") {
@@ -287,7 +350,7 @@ private fun DeviceList(state: UiState, model: AppModel, listState: ScalingLazyLi
                     // 自动探测已经跑过一轮，还是空就得让用户知道往哪儿看。
                     state.progress ?: stringResource(if (state.busy) R.string.loading else R.string.no_devices),
                     color = Hyper.Muted, fontSize = 13.sp, textAlign = TextAlign.Center,
-                    modifier = Modifier.padding(horizontal = 30.dp),
+                    modifier = Modifier.padding(horizontal = LocalDims.current.toastPad),
                 )
             }
         } else if (state.progress != null) {
@@ -297,6 +360,19 @@ private fun DeviceList(state: UiState, model: AppModel, listState: ScalingLazyLi
         state.byRoom.forEach { (room, devs) ->
             item(key = "room:$room") { SectionHeader(room.ifEmpty { stringResource(R.string.ungrouped) }, devs.size) }
             tileRows(devs, model)
+        }
+
+        // 收藏排序入口。一个设备时没有「顺序」可言，两个起才出现。
+        // 排在刷新之上：改顺序是偶尔为之，但它同时决定 Tile 那六格显示谁，值得找得到。
+        if (state.favIds.size > 1) {
+            item(key = "reorder") {
+                Pill(
+                    text = stringResource(R.string.reorder_favorites),
+                    accent = accentOf(null), filled = false,
+                    onClick = { model.openFavorites() },
+                    modifier = Modifier.padding(top = 10.dp),
+                )
+            }
         }
 
         item(key = "actions") {
@@ -332,7 +408,8 @@ private fun SceneRow(scenes: List<SceneInfo>, model: AppModel) {
         }
     }
     Row(
-        modifier = Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 20.dp),
+        modifier = Modifier.horizontalScroll(rememberScrollState())
+            .padding(horizontal = LocalDims.current.sceneRowPad),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         scenes.forEach { s ->
@@ -353,13 +430,14 @@ private fun SceneRow(scenes: List<SceneInfo>, model: AppModel) {
 private fun ScenePill(name: String, fired: Boolean, onClick: () -> Unit) {
     val interaction = remember { MutableInteractionSource() }
     val acc = accentOf(null)
+    val d = LocalDims.current
     val fill by animateFloatAsState(if (fired) 1f else 0f, label = "sceneFill")
     Box(
         modifier = Modifier
-            .height(34.dp)
-            .widthIn(max = 132.dp)
+            .height(d.scenePillH)
+            .widthIn(max = d.scenePillMaxW)
             .pressScale(interaction)
-            .clip(RoundedCornerShape(17.dp))
+            .clip(RoundedCornerShape(d.scenePillH / 2))
             .background(Hyper.SurfaceHi)
             .clickable(interactionSource = interaction, indication = null, onClick = onClick),
         contentAlignment = Alignment.Center,
@@ -382,9 +460,10 @@ private fun ScalingLazyListScope.tileRows(devs: List<Dev>, model: AppModel) {
     devs.chunked(2).forEach { pair ->
         // 行首 did 当 key：刷新后设备增减/换序时，没动的行不重建，滚动位置也稳
         item(key = pair.first().did) {
-            Row(horizontalArrangement = Arrangement.spacedBy(Dim.TileGap)) {
-                pair.forEach { d -> DeviceTile(d, model) }
-                if (pair.size == 1) Spacer(Modifier.width(Dim.TileW))
+            val d = LocalDims.current
+            Row(horizontalArrangement = Arrangement.spacedBy(d.tileGap)) {
+                pair.forEach { dev -> DeviceTile(dev, model) }
+                if (pair.size == 1) Spacer(Modifier.width(d.tileW))
             }
         }
     }
@@ -411,6 +490,7 @@ private fun SectionHeader(title: String, count: Int) {
 @Composable
 private fun DeviceTile(d: Dev, model: AppModel) {
     val acc = accentOf(d.category)
+    val dim = LocalDims.current
     val on = d.on == true
     val hasPower = d.power != null
     val live = hasPower && d.on != null
@@ -428,9 +508,9 @@ private fun DeviceTile(d: Dev, model: AppModel) {
 
     Box(
         modifier = Modifier
-            .size(Dim.TileW, Dim.TileH)
+            .size(dim.tileW, dim.tileH)
             .pressScale(interaction)
-            .clip(RoundedCornerShape(Dim.TileRadius))
+            .clip(RoundedCornerShape(dim.tileRadius))
             .background(Hyper.Surface)
             .combinedClickable(
                 interactionSource = interaction,
@@ -516,6 +596,109 @@ private fun DeviceIconOrGlyph(d: Dev, glyphColor: Color, iconSize: Dp, glyphSize
 private fun offlineNote(d: Dev): String? =
     if (d.power != null && d.on == null) stringResource(R.string.offline) else null
 
+// ---------- 收藏排序 ----------
+
+/**
+ * 收藏顺序＝首屏顺序＝Tile 那六格的顺序（见 AppModel.syncTile）。
+ * 在这之前顺序只能是「加收藏的先后」，想把最常按的挪到第一个得全部取消再按序加回来。
+ *
+ * 交互用上下箭头而不是长按拖拽：拖拽要在滚动列表里劫持竖向手势，
+ * 而这块屏幕本身就靠竖向滚动，两者在 33mm 上分不开——每次误触的代价是顺序被打乱。
+ * 箭头一下一格，慢，但收藏一共三五个，且改完就不再来。
+ */
+@Composable
+private fun FavoritesScreen(state: UiState, model: AppModel) {
+    val listState = rememberWatchListState()
+    val d = LocalDims.current
+    val favs = state.favorites
+
+    BackHandler { model.back() }
+
+    ScrollScreen(listState) {
+        WatchColumn(listState) {
+            item(key = "hdr") {
+                Text(
+                    stringResource(R.string.reorder_title),
+                    color = Hyper.Muted, fontSize = 11.sp, textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(horizontal = d.rowPad, vertical = 2.dp),
+                )
+            }
+            items(favs.size) { i ->
+                val dev = favs[i]
+                FavoriteRow(
+                    name = dev.name,
+                    accent = accentOf(dev.category),
+                    canUp = i > 0,
+                    canDown = i < favs.lastIndex,
+                    onUp = { model.moveFavorite(dev.did, -1) },
+                    onDown = { model.moveFavorite(dev.did, 1) },
+                )
+            }
+            item(key = "done") {
+                Pill(
+                    text = stringResource(R.string.done),
+                    accent = accentOf(null), filled = false,
+                    onClick = { model.back() },
+                    modifier = Modifier.padding(horizontal = d.rowPad, vertical = 6.dp).fillMaxWidth(),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun FavoriteRow(
+    name: String,
+    accent: Accent,
+    canUp: Boolean,
+    canDown: Boolean,
+    onUp: () -> Unit,
+    onDown: () -> Unit,
+) {
+    val d = LocalDims.current
+    Row(
+        Modifier.padding(horizontal = d.rowPad, vertical = 2.dp).fillMaxWidth()
+            .clip(RoundedCornerShape(d.chipRadius))
+            .background(Hyper.Surface)
+            .padding(start = 12.dp, end = 3.dp, top = 3.dp, bottom = 3.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            name,
+            color = Hyper.OnSurface, fontSize = 12.sp,
+            maxLines = 1, overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        MoveButton("▲", accent, canUp, onUp)
+        MoveButton("▼", accent, canDown, onDown)
+    }
+}
+
+/** 到顶/到底时不是隐藏而是压暗：位置不动，手指不用重新找。 */
+@Composable
+private fun MoveButton(glyph: String, accent: Accent, enabled: Boolean, onClick: () -> Unit) {
+    val haptics = LocalHapticFeedback.current
+    val interaction = remember { MutableInteractionSource() }
+    val size = LocalDims.current.chipH * 0.8f
+    Box(
+        modifier = Modifier
+            .size(size)
+            .pressScale(interaction)
+            .clip(CircleShape)
+            .background(if (enabled) Hyper.SurfaceHi else Color.Transparent)
+            .clickable(
+                interactionSource = interaction, indication = null, enabled = enabled,
+                onClick = {
+                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                    onClick()
+                },
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(glyph, color = if (enabled) accent.light else Hyper.Muted.copy(alpha = 0.3f), fontSize = 11.sp)
+    }
+}
+
 // ---------- 设备详情 ----------
 
 /**
@@ -528,6 +711,7 @@ private fun offlineNote(d: Dev): String? =
 @Composable
 private fun DetailScreen(dev: Dev, state: UiState, model: AppModel) {
     val acc = accentOf(dev.category)
+    val d = LocalDims.current
     val heros = heroRanges(dev)
     // 设备一换索引就归零，否则上一台的第 2 个量会错位到这一台
     var heroIdx by remember(dev.did) { mutableStateOf(0) }
@@ -548,7 +732,8 @@ private fun DetailScreen(dev: Dev, state: UiState, model: AppModel) {
     Box(Modifier.fillMaxSize()) {
         Text(
             dev.name,
-            modifier = Modifier.align(Alignment.TopCenter).padding(top = 14.dp, start = 40.dp, end = 40.dp),
+            modifier = Modifier.align(Alignment.TopCenter)
+                .padding(top = d.titleTop, start = d.titleSide, end = d.titleSide),
             color = if (dev.busy) acc.light else Hyper.Muted,
             fontSize = 13.sp,
             maxLines = 1,
@@ -556,29 +741,34 @@ private fun DetailScreen(dev: Dev, state: UiState, model: AppModel) {
             textAlign = TextAlign.Center,
         )
 
-        // 多个可拖量（空调：温度 + 风速）才显示切换器；单量设备一像素不变
-        if (heros.size > 1) {
-            HeroSwitcher(
-                heros, heroIdx.coerceAtMost(heros.lastIndex), acc,
-                modifier = Modifier.align(Alignment.TopCenter).padding(top = 31.dp),
-            ) { heroIdx = it }
-        }
-
-        Row(
+        // 切换器和滑块合成一列一起居中，而不是各自绝对定位。
+        // 分开定位时两者的间距是「屏高减去滑块高度再对半分」的余数，屏一小就变负数——
+        // 192dp 上实测切换器被滑块直接盖住。串成一列后，间距由布局保证，与屏幅无关。
+        Column(
             modifier = Modifier.align(Alignment.Center),
-            verticalAlignment = Alignment.CenterVertically,
+            horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            HeroSlider(
-                dev = dev,
-                range = hero,
-                accent = acc,
-                // 选择层开着时表圈事件不该落到滑块上
-                rotaryActive = picking == null,
-                onToggle = { model.toggle(dev.did) },
-                onCommit = { v -> hero?.let { model.write(dev.did, it, DevValue(true, num = v)) } },
-            )
-            Spacer(Modifier.width(Dim.ColGap))
-            SideColumn(dev, acc, heros, faved, model) { picking = it }
+            // 多个可拖量（空调：温度 + 风速）才显示切换器；单量设备一像素不变
+            if (heros.size > 1) {
+                HeroSwitcher(
+                    heros, heroIdx.coerceAtMost(heros.lastIndex), acc,
+                    modifier = Modifier.padding(bottom = 4.dp),
+                ) { heroIdx = it }
+            }
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                HeroSlider(
+                    dev = dev,
+                    range = hero,
+                    accent = acc,
+                    // 选择层开着时表圈事件不该落到滑块上
+                    rotaryActive = picking == null,
+                    onToggle = { model.toggle(dev.did) },
+                    onCommit = { v -> hero?.let { model.write(dev.did, it, DevValue(true, num = v)) } },
+                )
+                Spacer(Modifier.width(d.colGap))
+                SideColumn(dev, acc, heros, faved, model) { picking = it }
+            }
         }
 
         // 只读量走底部状态行而不是右列 chip：它们点不动，不该跟模式/风速抢那三个可见槽位。
@@ -586,7 +776,8 @@ private fun DetailScreen(dev: Dev, state: UiState, model: AppModel) {
         readoutLine(dev)?.let {
             Text(
                 it,
-                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 15.dp, start = 46.dp, end = 46.dp),
+                modifier = Modifier.align(Alignment.BottomCenter)
+                    .padding(bottom = d.readoutBottom, start = d.readoutSide, end = d.readoutSide),
                 color = Hyper.Muted,
                 fontSize = 10.sp,
                 maxLines = 1,
@@ -687,6 +878,8 @@ private fun HeroSlider(
     val on = !hasPower || dev.on == true
     val canToggle = hasPower && dev.on != null
     val canDrag = range != null && (!hasPower || dev.on != null)
+    val d = LocalDims.current
+    val screenPx = with(LocalDensity.current) { LocalConfiguration.current.screenHeightDp.dp.toPx() }
     val haptics = LocalHapticFeedback.current
     val committed = range?.let { dev.valueOf(it)?.num }
     var dragging by remember { mutableStateOf<Double?>(null) }
@@ -720,16 +913,17 @@ private fun HeroSlider(
 
     Box(
         modifier = Modifier
-            .width(Dim.HeroW)
-            .height(Dim.HeroH)
-            .clip(RoundedCornerShape(Dim.HeroRadius))
+            .width(d.heroW)
+            .height(d.heroH)
+            .clip(RoundedCornerShape(d.heroRadius))
             .background(Hyper.SurfaceHi)
             .onRotaryScrollEvent { ev ->
                 val r = range
                 if (!canDrag || r == null || !rotaryActive) return@onRotaryScrollEvent false
                 val span = r.max - r.min
-                // 顺时针＝正值＝加；一整屏高的滚动量走完全量程，和触摸拖动同一比例
-                val next = r.stepped((dragging ?: committed ?: r.min) + (ev.verticalScrollPixels / 480f) * span)
+                // 顺时针＝正值＝加；一整屏高的滚动量走完全量程，和触摸拖动同一比例。
+                // 除数必须是本机的屏高像素：写死 480 会让 384px 的表转一圈只走到 80% 量程
+                val next = r.stepped((dragging ?: committed ?: r.min) + (ev.verticalScrollPixels / screenPx) * span)
                 if (next != dragging) {
                     dragging = next
                     haptics.performHapticFeedback(HapticFeedbackType.SegmentFrequentTick)
@@ -789,12 +983,12 @@ private fun HeroSlider(
             Modifier
                 .align(Alignment.TopCenter)
                 .fillMaxWidth()
-                .height(58.dp)
+                .height(d.heroTopFade)
                 .background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.45f), Color.Transparent))),
         )
 
         Column(
-            modifier = Modifier.fillMaxSize().padding(top = 15.dp, bottom = 12.dp),
+            modifier = Modifier.fillMaxSize().padding(top = d.heroPadTop, bottom = d.heroPadBottom),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Text(
@@ -841,12 +1035,13 @@ private fun SideColumn(
     onPick: (Control) -> Unit,
 ) {
     val scroll = rememberScrollState()
+    val d = LocalDims.current
     // 主开关已经并进滑块的点击；全部 hero 都归切换器管，右列不再重复
     val rest = dev.quick.filter { it !in heros && !(it is Control.Toggle && it.isPower) }
 
     Column(
-        modifier = Modifier.width(Dim.ChipW).height(Dim.HeroH).verticalScroll(scroll),
-        verticalArrangement = Arrangement.spacedBy(Dim.ChipGap),
+        modifier = Modifier.width(d.chipW).height(d.heroH).verticalScroll(scroll),
+        verticalArrangement = Arrangement.spacedBy(d.chipGap),
     ) {
         rest.forEach { c ->
             when (c) {
@@ -907,14 +1102,10 @@ private fun FavChip(faved: Boolean, acc: Accent, onClick: () -> Unit) {
  */
 @Composable
 private fun SensorDetail(dev: Dev, acc: Accent, faved: Boolean, model: AppModel, onPick: (Control) -> Unit) {
-    val listState = rememberScalingLazyListState()
+    val listState = rememberWatchListState()
+    val d = LocalDims.current
     ScrollScreen(listState) {
-        ScalingLazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            state = listState,
-            horizontalAlignment = Alignment.CenterHorizontally,
-            rotaryScrollableBehavior = RotaryScrollableDefaults.behavior(listState),
-        ) {
+        WatchColumn(listState) {
             item {
                 Text(dev.name, color = Hyper.Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
@@ -939,14 +1130,14 @@ private fun SensorDetail(dev: Dev, acc: Accent, faved: Boolean, model: AppModel,
                             text = "${shortLabel(c.label)} ${stringResource(if (v) R.string.on else R.string.off)}",
                             accent = acc, filled = v,
                             onClick = { model.write(dev.did, c, DevValue(true, bool = !v)) },
-                            modifier = Modifier.padding(horizontal = 26.dp).fillMaxWidth(),
+                            modifier = Modifier.padding(horizontal = d.rowPad).fillMaxWidth(),
                         )
                     }
                     is Control.Act -> Pill(
                         text = "▸ ${shortLabel(c.label)}",
                         accent = acc, filled = false,
                         onClick = { if (c.arg != null) onPick(c) else model.invoke(dev.did, c) },
-                        modifier = Modifier.padding(horizontal = 26.dp).fillMaxWidth(),
+                        modifier = Modifier.padding(horizontal = d.rowPad).fillMaxWidth(),
                     )
 
                     is Control.Prop -> if (c !is Control.Range || c.presets().isNotEmpty()) {
@@ -954,7 +1145,7 @@ private fun SensorDetail(dev: Dev, acc: Accent, faved: Boolean, model: AppModel,
                             text = shortLabel(c.label),
                             accent = acc, filled = false,
                             onClick = { onPick(c) },
-                            modifier = Modifier.padding(horizontal = 26.dp).fillMaxWidth(),
+                            modifier = Modifier.padding(horizontal = d.rowPad).fillMaxWidth(),
                         )
                     } else Unit
                 }
@@ -964,7 +1155,7 @@ private fun SensorDetail(dev: Dev, acc: Accent, faved: Boolean, model: AppModel,
                     text = stringResource(if (faved) R.string.faved_pill else R.string.fav_pill),
                     accent = acc, filled = faved,
                     onClick = { model.toggleFavorite(dev.did) },
-                    modifier = Modifier.padding(horizontal = 30.dp).fillMaxWidth(),
+                    modifier = Modifier.padding(horizontal = d.rowPad).fillMaxWidth(),
                 )
             }
         }
@@ -974,7 +1165,7 @@ private fun SensorDetail(dev: Dev, acc: Accent, faved: Boolean, model: AppModel,
 @Composable
 private fun ReadoutRow(label: String, value: String, acc: Accent) {
     Row(
-        Modifier.padding(horizontal = 26.dp).fillMaxWidth()
+        Modifier.padding(horizontal = LocalDims.current.rowPad).fillMaxWidth()
             .clip(RoundedCornerShape(19.dp))
             .background(Hyper.Surface)
             .padding(horizontal = 13.dp, vertical = 9.dp),
@@ -1013,15 +1204,16 @@ private fun Chip(
     onClick: (() -> Unit)?,
 ) {
     val interaction = remember { MutableInteractionSource() }
+    val d = LocalDims.current
     val fill by animateFloatAsState(if (active) 1f else 0f, label = "chipFill")
     val fg = lerp(Hyper.OnSurface, Hyper.OnAccent, fill)
 
     Box(
         modifier = Modifier
-            .width(Dim.ChipW)
-            .height(Dim.ChipH)
+            .width(d.chipW)
+            .height(d.chipH)
             .pressScale(interaction)
-            .clip(RoundedCornerShape(Dim.ChipRadius))
+            .clip(RoundedCornerShape(d.chipRadius))
             .background(Hyper.SurfaceHi)
             .then(
                 if (onClick != null) {
@@ -1073,7 +1265,8 @@ private fun PickerOverlay(
     }
     // 动作没有当前值可高亮——它是「做一次」，不是「处于某档」
     val cur = (c as? Control.Prop)?.let { dev.valueOf(it)?.num?.roundToInt() }
-    val listState = rememberScalingLazyListState()
+    val listState = rememberWatchListState()
+    val d = LocalDims.current
 
     Box(
         Modifier.fillMaxSize()
@@ -1087,12 +1280,7 @@ private fun PickerOverlay(
             ),
     ) {
         ScrollScreen(listState) {
-            ScalingLazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                state = listState,
-                horizontalAlignment = Alignment.CenterHorizontally,
-                rotaryScrollableBehavior = RotaryScrollableDefaults.behavior(listState),
-            ) {
+            WatchColumn(listState) {
                 item {
                     Text(
                         shortLabel(c.label),
@@ -1107,7 +1295,7 @@ private fun PickerOverlay(
                         accent = acc,
                         filled = cur == value,
                         onClick = { onPick(value) },
-                        modifier = Modifier.padding(horizontal = 24.dp).fillMaxWidth(),
+                        modifier = Modifier.padding(horizontal = d.optionPad).fillMaxWidth(),
                     )
                 }
             }
@@ -1127,11 +1315,12 @@ private fun Pill(
     modifier: Modifier = Modifier,
 ) {
     val interaction = remember { MutableInteractionSource() }
+    val d = LocalDims.current
     Box(
         modifier = modifier
-            .height(42.dp)
+            .height(d.pillH)
             .pressScale(interaction)
-            .clip(RoundedCornerShape(21.dp))
+            .clip(RoundedCornerShape(d.pillRadius))
             .background(Hyper.SurfaceHi)
             .clickable(interactionSource = interaction, indication = null, onClick = onClick),
         contentAlignment = Alignment.Center,
@@ -1167,7 +1356,7 @@ private fun BoxScope.ErrorToast(state: UiState, model: AppModel) {
     ) {
         Box(
             Modifier
-                .padding(horizontal = 30.dp, vertical = 12.dp)
+                .padding(horizontal = LocalDims.current.toastPad, vertical = 12.dp)
                 .clip(RoundedCornerShape(18.dp))
                 .background(Hyper.Danger.copy(alpha = 0.16f))
                 .clickable(

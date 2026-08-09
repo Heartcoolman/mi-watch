@@ -9,6 +9,12 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var model: AppModel
 
+    /**
+     * 调试入口接管过启动流程。接管后不再让 onResume 自己去刷新——
+     * `--es toggle` 这类命令自带一条加载路径，再并一个 refresh 只会打架。
+     */
+    private var debugTakeover = false
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Flog.init(this)
@@ -18,12 +24,22 @@ class MainActivity : ComponentActivity() {
 
         setContent { App(model) }
 
-        if (!handleDebugIntent(intent)) model.start()
+        debugTakeover = handleDebugIntent(intent)
+        if (!debugTakeover) model.start()
+    }
+
+    /**
+     * 抬腕回到 App 时重新拉一次状态。进程活着的话这里是唯一的入口——
+     * onCreate 只在冷启动跑一次，而设备状态在这中间早就被别处改过了。
+     */
+    override fun onResume() {
+        super.onResume()
+        if (!debugTakeover) model.onResume()
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        handleDebugIntent(intent)
+        debugTakeover = handleDebugIntent(intent)
     }
 
     /**

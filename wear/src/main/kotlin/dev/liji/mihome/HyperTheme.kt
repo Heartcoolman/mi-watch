@@ -16,6 +16,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlin.math.cos
 import kotlin.math.sin
@@ -267,42 +268,118 @@ fun Modifier.pressScale(interaction: MutableInteractionSource): Modifier {
     return graphicsLayer { scaleX = scale; scaleY = scale }
 }
 
-// ---------- 圆屏尺寸 ----------
+// ---------- 屏幕几何 ----------
 
 /**
- * 480px @340dpi ＝ 226dp 直径，半径 113dp。圆屏上任何一行的可用宽度是
- * 2·√(113² − y²)，y 是离圆心的竖直距离。下面这些常量都是照这个式子算出来的：
+ * 全部尺寸都从屏宽推出来，而不是写死。
  *
- *   |y|=70  → 177dp   竖滑块（140dp 高）的上下端，决定了 82+6+82 的三段分配
- *   |y|=86  → 147dp   三张 52dp 卡片里最外侧那张的边缘，决定了 174dp 卡宽
+ * 基准是开发机 Galaxy Watch 7：480px @340dpi ＝ 226dp 直径，半径 113dp。
+ * 圆屏上任何一行的可用宽度是 2·√(113² − y²)，y 是离圆心的竖直距离——
+ * 下面那些 0.743 / 0.752 的比例就是照这个式子在基准屏上量出来的：
  *
- * 写死成常量而不是按屏幕比例算：这个 App 只跑在这一块表上，
- * 按比例缩放反而会让好不容易调准的边距在别处失准。
+ *   |y|=75 → 168dp   两列磁贴（80+8+80）最外侧行的边缘
+ *   |y|=70 → 177dp   竖滑块（140dp 高）的上下端，决定 82+6+82 的三段分配
+ *
+ * 之前这些是常量，理由是「只跑在这一块表上」。作为开源分发的 APK 这条不再成立：
+ * Pixel Watch 41mm 只有 192dp 宽，168dp 的两列居中后两侧仅剩 12dp，
+ * 外侧行的磁贴角会被圆屏直接切掉。按屏宽等比缩放后，任何尺寸的表都保持
+ * 与基准屏相同的边距比例，也就保持了原本调准的收口关系。
+ *
+ * 字号不参与缩放：可读性有绝对下限，最小的 9sp 再乘 0.85 就没法看了，
+ * 而屏宽的实际跨度只有 192–228dp（±8%），字号照搬不会溢出。
  */
-object Dim {
+@androidx.compose.runtime.Immutable
+class Dims(val screenW: Dp, val round: Boolean) {
+
+    private val k = screenW / 226.dp
+
+    /** 基准屏上量得的值 → 当前屏。 */
+    private fun s(base: Float): Dp = (base * k).dp
+
     /**
-     * 2 列磁贴。整宽长条为了放一个名字占掉全部横向空间，22 个设备要滚 7 屏；
-     * 两列之后一屏能看 5–6 个。80+8+80 = 168dp 宽，居中后离圆心最远处
-     * 需要 |y| ≤ √(113²−84²) ≈ 75dp——正好是中间两行的范围，
-     * 更外侧的行交给 ScalingLazyColumn 自己缩小，圆屏的收口是免费的。
+     * 左右缩进。圆屏那一列数是「让这行内容落在弦内」量出来的，跟着屏宽等比缩；
+     * 方屏没有弦，同一个数就只是白白把内容夹窄，改成按屏宽取一个正常的版心比例。
+     * 方屏侧统一取 0.06，与磁贴网格 (1−0.88)/2 相同——全宽行因此和磁贴左右对齐。
      */
-    val TileW = 80.dp
-    val TileH = 82.dp
-    val TileGap = 8.dp
-    val TileRadius = 22.dp
+    private fun inset(roundBase: Float, squareFrac: Float): Dp =
+        if (round) s(roundBase) else screenW * squareFrac
 
-    val CardH = 52.dp
-    val CardGap = 8.dp
-    val CardPad = 26.dp // 左右各留 26dp → 卡宽 174dp
+    /**
+     * 两列磁贴合计占屏宽的比例。
+     * 圆屏 168/226 = 0.743，再宽外侧行的角就会被圆切掉；
+     * 方屏没有切角这回事，放宽到 0.88 把角落用起来。
+     */
+    private val tilesSpan = if (round) 0.743f else 0.88f
 
-    val HeroW = 82.dp
-    val HeroH = 140.dp
-    val ColGap = 6.dp
-    val ChipW = 82.dp
-    val ChipH = 42.dp
-    val ChipGap = 5.dp
+    /** 竖滑块 + chip 列合计占屏宽的比例。圆屏 170/226 = 0.752。 */
+    private val heroSpan = if (round) 0.752f else 0.88f
 
-    val CardRadius = 26.dp
-    val HeroRadius = 28.dp
-    val ChipRadius = 21.dp
+    val tileGap = s(8f)
+    val tileW = (screenW * tilesSpan - tileGap) / 2
+
+    /**
+     * 磁贴高度。宽度可以等比缩——放不下的名字有 ellipsis 兜着；高度不行：
+     * 里头的字号不参与缩放，8+24（图标）+24（名字两行）+13（读数）+8 恒定要 77dp，
+     * 而 192dp 的表等比缩下来只有 70dp，读数那行会被切掉半个字
+     * （在 384×384 模拟器上实测到「25.9° 4」只剩上半截）。所以给一个内容下限。
+     */
+    val tileH = maxOf(s(82f), 80.dp)
+    val tileRadius = s(22f)
+
+    val colGap = s(6f)
+    val heroW = (screenW * heroSpan - colGap) / 2
+    val chipW = heroW
+    /**
+     * 竖滑块高度。除了等比，还要留得下上下那几行固定字号的东西：
+     * 顶上是设备名（约 29dp）＋多量设备的切换器（约 20dp），底下是只读量那一行（约 25dp）。
+     * 基准屏 226−86 = 140，正好等于原值，一个像素不动；192dp 的表则从等比的 119 收到 106，
+     * 否则切换器会被滑块顶掉（384×384 模拟器上实测「目标温度」被压掉半行）。
+     * 手表屏都是正方形，用屏宽代屏高。
+     */
+    val heroH = minOf(s(140f), screenW - 86.dp)
+    /** 滑块顶部那层压暗渐变的高度，兜住数字所在的一段。 */
+    val heroTopFade = s(58f)
+    val heroPadTop = s(15f)
+    val heroPadBottom = s(12f)
+    val chipH = s(42f)
+    val chipGap = s(5f)
+    val heroRadius = s(28f)
+    val chipRadius = s(21f)
+
+    val pillH = s(42f)
+    val pillRadius = pillH / 2
+
+    /** 全宽行（读数行、选项胶囊）的左右留白。 */
+    val rowPad = inset(26f, 0.06f)
+    val optionPad = inset(24f, 0.06f)
+
+    /** 错误浮层。它不铺满宽度，留白同时也是在限制它的最大宽度。 */
+    val toastPad = inset(30f, 0.08f)
+
+    val scenePillH = s(34f)
+    val scenePillMaxW = s(132f)
+    val sceneRowPad = inset(20f, 0.06f)
+
+    /**
+     * 详情页顶部设备名与底部读数行的避让。圆屏上它们贴着上下弧，左右缩进是为了让
+     * 文字落在弦内——那两行贴边最近，所以缩得比别处狠（34dp / 39dp）。方屏上那是
+     * 整整一条边，同样的缩进会把一行设备名硬挤成两三个字，改按版心比例。
+     */
+    val titleTop = s(14f)
+    val titleSide = inset(40f, 0.10f)
+    val readoutBottom = inset(15f, 0.055f)
+    val readoutSide = inset(46f, 0.10f)
+
+    /**
+     * 二维码边长。圆屏上 0.752 已经让四角略微探出圆外（对角线 240dp > 226dp），
+     * 但探出的部分正好落在静默区里，基准机上实测扫得动——所以保持这个比例，
+     * 缩放到小屏时行为一致。方屏可以更大，扫得更快。
+     */
+    val qr = screenW * (if (round) 0.752f else 0.85f)
 }
+
+/**
+ * 圆屏的默认值。真正的值由 App() 在根部按 LocalConfiguration 算好后注入；
+ * 这里给基准屏的数，只是为了让 CompositionLocal 有个非空默认。
+ */
+val LocalDims = androidx.compose.runtime.staticCompositionLocalOf { Dims(226.dp, round = true) }

@@ -23,6 +23,11 @@
     <string name="offline">offline</string>
     <string name="stale_banner">Offline · last known state</string>
     <string name="progress_specs">Loading device models %1$d/%2$d</string>
+    <string name="reorder_favorites">Reorder favorites</string>
+
+    <!-- 收藏排序 -->
+    <string name="reorder_title">Order of favorites and tile</string>
+    <string name="done">Done</string>
 
     <!-- 详情 -->
     <string name="device_missing">Device not found</string>
