@@ -33,19 +33,20 @@ jobs:
         with:
           gradle-version: '8.14.5'
 
-      - name: Probe repos
+      # runner 环境里预置了一个指向 127.0.0.1 的 Gradle 代理配置，而那个端口
+      # 没人监听：Gradle 的连接路由是 {tls}->http://127.0.0.1:PORT->https://dl.google.com:443，
+      # 于是从 wrapper 下载分发包到解析依赖，一律 Connection refused。
+      # curl 和裸 JVM 不读 Gradle 的配置，所以在同一台机器上直连是通的——
+      # 这个反差正是当初把它误判成网络故障的原因。
+      - name: Strip proxy settings from Gradle config
         run: |
-          for U in \
-            "https://dl.google.com/android/maven2/com/android/application/com.android.application.gradle.plugin/8.13.2/com.android.application.gradle.plugin-8.13.2.pom" \
-            "https://repo.maven.apache.org/maven2/org/jetbrains/kotlin/kotlin-stdlib/2.2.20/kotlin-stdlib-2.2.20.pom" \
-            "https://maven.aliyun.com/repository/google/com/android/application/com.android.application.gradle.plugin/8.13.2/com.android.application.gradle.plugin-8.13.2.pom" ; do
-            printf '%s -> ' "${U##*maven2/}"
-            curl -sS -L -o /dev/null -w '%{http_code}\n' --max-time 25 "$U" || echo FAIL
-          done
-          echo "=== gradle debug ==="
-          gradle help --debug --console=plain 2>&1 \
-            | grep -iE "Resource missing|HTTP GET|dl\.google|aliyun|Could not (GET|resolve)|Loading .*from" \
-            | head -30 || true
+          grep -rlEi 'proxy' ~/.gradle/ 2>/dev/null || echo "(no proxy config found)"
+          F=~/.gradle/gradle.properties
+          if [ -f "$F" ]; then
+            echo "--- before ---"; cat "$F"
+            sed -i -E '/[Pp]roxy/d' "$F"
+            echo "--- after ---"; cat "$F"
+          fi
 
       # :core:test 是归约规则的回归；assembleRelease 走 R8，能一并暴露
       # proguard 规则漏配这类只在压缩后才炸的问题
