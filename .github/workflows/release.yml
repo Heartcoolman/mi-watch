@@ -14,14 +14,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '21'
 
       - uses: android-actions/setup-android@v3
 
-      - uses: gradle/actions/setup-gradle@v4
+      # 同 ci.yml：setup-gradle 注入的 GRADLE_OPTS 会让 wrapper 拉不到分发包
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: gradle-${{ runner.os }}-
 
       # release 构建刻意仍用 debug 签名（理由见 wear/build.gradle.kts）。
       # 但 CI 的 runner 每次都是干净机器，AGP 会现生成一个 debug keystore——

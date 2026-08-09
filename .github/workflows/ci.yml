@@ -18,14 +18,23 @@ jobs:
       - uses: actions/checkout@v4
 
       # JDK 21：core/wear 都产出 17 字节码，但工具链本身要 21（见 core/build.gradle.kts）
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '21'
 
       - uses: android-actions/setup-android@v3
 
-      - uses: gradle/actions/setup-gradle@v4
+      # 不用 gradle/actions/setup-gradle：它注入的 GRADLE_OPTS 会被 gradlew 脚本
+      # 一并传给下载分发包的那个 JVM，实测 wrapper 拉 gradle-8.14.5-bin.zip 时
+      # 150ms 内 Connection refused。缓存自己管，反正只有两个目录。
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: gradle-${{ runner.os }}-
 
       # :core:test 是归约规则的回归；assembleRelease 走 R8，能一并暴露
       # proguard 规则漏配这类只在压缩后才炸的问题
@@ -44,3 +53,5 @@ jobs:
         with:
           name: test-report
           path: core/build/reports/tests/
+          # 构建在跑到测试之前就挂掉时这个目录不存在，不必再报一次错
+          if-no-files-found: ignore
