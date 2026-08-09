@@ -64,9 +64,39 @@ jobs:
           systemProp.https.proxyPort=
           EOF
 
+      # 与 release.yml 一致：用仓库里那份固定的 debug keystore 签名，
+      # 这样 CI 产出的 APK 和发版包、以及本地 adb install 的包能互相覆盖安装
+      - name: Restore signing keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            mkdir -p ~/.android
+            echo "$KEYSTORE_B64" | base64 -d > ~/.android/debug.keystore
+          fi
+
       # :core:test 是归约规则的回归；assembleRelease 走 R8，能一并暴露
       # proguard 规则漏配这类只在压缩后才炸的问题
       - run: gradle :core:test :wear:assembleRelease --console=plain
+
+      - name: Signing check
+        env:
+          KEYSTORE_B64: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
+        run: |
+          echo "--- ~/.android ---"; ls -la ~/.android/ 2>/dev/null || echo none
+          if [ -f ~/.android/debug.keystore ]; then
+            keytool -list -v -keystore ~/.android/debug.keystore -storepass android 2>/dev/null | grep -i "SHA256:" | head -2
+          fi
+          echo "--- secret 解出来的指纹 ---"
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > /tmp/from-secret.jks
+            keytool -list -v -keystore /tmp/from-secret.jks -storepass android 2>/dev/null | grep -i "SHA256:" | head -2
+          fi
+          echo "--- APK 实际签名 ---"
+          AS=$(ls -d "$ANDROID_HOME"/build-tools/*/apksigner | tail -1)
+          "$AS" verify --print-certs wear/build/outputs/apk/release/wear-release.apk | grep -i "SHA-256"
+          echo "--- AGP 认定的 signingConfig ---"
+          gradle :wear:signingReport --console=plain 2>/dev/null | grep -A6 "Variant: release" | head -12 || true
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
