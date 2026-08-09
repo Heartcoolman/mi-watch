@@ -29,6 +29,29 @@ android {
     }
     kotlinOptions { jvmTarget = "17" }
 
+    /**
+     * 和 debug 用同一把 key，但把路径显式写出来。
+     *
+     * AGP 自带的 debug signingConfig 在 CI 上不认我们放好的 ~/.android/debug.keystore：
+     * runner 上那个文件指纹明明是 7F:0B:...，产出的 APK 却签成了别的，而且**每次构建都不同**
+     * ——说明它自己另生成了一把一次性的。后果是发出去的包互相之间、以及与本地 adb install
+     * 的包都装不到一起，升级只能卸载重装（连带丢掉已存的 passToken）。
+     * 显式指到同一个文件就没有这个歧义。
+     *
+     * 文件不存在时（干净的新机器）留空，回落到 AGP 自己那套「没有就现生成」的行为。
+     */
+    val sharedKeystore = File(System.getProperty("user.home"), ".android/debug.keystore")
+    signingConfigs {
+        if (sharedKeystore.exists()) {
+            create("shared") {
+                storeFile = sharedKeystore
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
+        }
+    }
+
     // 只构建 debug：混签会撞 INSTALL_FAILED_UPDATE_INCOMPATIBLE，逼你卸载重装，
     // 而卸载会清掉已存的 passToken。
     // 但**开 R8**：不压缩时 dex 有 33MB（Compose 运行时全量），冷启动光加载校验就要两秒。
@@ -46,7 +69,7 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.findByName("shared") ?: signingConfigs.getByName("debug")
         }
     }
 
