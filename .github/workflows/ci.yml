@@ -34,17 +34,19 @@ jobs:
       # runner 出网走 HTTP 代理时，curl 会自己读 https_proxy，JVM 不读——
       # 于是同一台机器上 curl 拿得到 307，而 Gradle 一律 Connection refused。
       # 把代理翻译成 JVM 的系统属性；没有代理变量时这一步什么也不做。
-      - name: Route JVM through runner proxy
+      - name: Probe
         run: |
-          P="${https_proxy:-${HTTPS_PROXY:-}}"
-          env | grep -iE 'proxy' || echo "(no proxy vars in env)"
-          if [ -n "$P" ]; then
-            HP=$(printf '%s' "$P" | sed -E 's#^[a-z]+://##; s#/.*$##; s#@.*$##; s#:[0-9]+$##')
-            PP=$(printf '%s' "$P" | sed -E 's#^[a-z]+://##; s#/.*$##' | sed -nE 's#.*:([0-9]+)$#\1#p')
-            PP=${PP:-8080}
-            echo "GRADLE_OPTS=-Dhttps.proxyHost=$HP -Dhttps.proxyPort=$PP -Dhttp.proxyHost=$HP -Dhttp.proxyPort=$PP -Dhttp.nonProxyHosts=localhost|127.0.0.1" >> "$GITHUB_ENV"
-            echo "JVM 走代理 $HP:$PP"
-          fi
+          U=https://dl.google.com/dl/android/maven2/com/android/application/com.android.application.gradle.plugin/8.13.2/com.android.application.gradle.plugin-8.13.2.pom
+          curl -sS -o /dev/null -w 'AGP pom via curl: %{http_code}\n' --max-time 20 "$U" || echo "curl FAIL"
+          cat > /tmp/P.java <<'EOJ'
+          import java.net.*;
+          public class P { public static void main(String[] a) throws Exception {
+            try (var s = new java.io.BufferedInputStream(URI.create(a[0]).toURL().openStream())) {
+              System.out.println("JVM ok, first bytes=" + s.read());
+            } catch (Exception e) { System.out.println("JVM " + e); }
+          }}
+          EOJ
+          java /tmp/P.java "$U" || true
 
       # 由 action 备好 Gradle 本体，而不是让 wrapper 自己去下载。
       # runner 上 wrapper 那个 JVM 连 services.gradle.org 会 150ms 内
