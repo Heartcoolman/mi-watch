@@ -36,9 +36,22 @@ jobs:
           key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
           restore-keys: gradle-${{ runner.os }}-
 
+      - name: Network probe
+        run: |
+          echo "--- DNS ---"; getent ahosts services.gradle.org | head -5
+          echo "--- curl default ---"; curl -sS -o /dev/null -w '%{http_code}\n' -I --max-time 20 https://services.gradle.org/distributions/gradle-8.14.5-bin.zip || echo FAIL
+          echo "--- curl -6 ---"; curl -sS -o /dev/null -w '%{http_code}\n' -6 -I --max-time 20 https://services.gradle.org/ || echo "IPv6 FAIL"
+          echo "--- java ---"; java -e 2>/dev/null; true
+
       # :core:test 是归约规则的回归；assembleRelease 走 R8，能一并暴露
       # proguard 规则漏配这类只在压缩后才炸的问题
+      #
+      # preferIPv4Stack：runner 的 IPv6 出网是拒绝的，而 wrapper 下载分发包那个 JVM
+      # 解析到 AAAA 就直奔 IPv6，150ms 内 Connection refused（curl 会自己退回 IPv4，
+      # 所以命令行测着是通的）。gradlew 脚本会把 GRADLE_OPTS 传给那个 JVM。
       - run: ./gradlew :core:test :wear:assembleRelease --console=plain
+        env:
+          GRADLE_OPTS: -Djava.net.preferIPv4Stack=true
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
