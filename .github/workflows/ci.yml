@@ -31,6 +31,21 @@ jobs:
 
       - uses: android-actions/setup-android@v3
 
+      # runner 出网走 HTTP 代理时，curl 会自己读 https_proxy，JVM 不读——
+      # 于是同一台机器上 curl 拿得到 307，而 Gradle 一律 Connection refused。
+      # 把代理翻译成 JVM 的系统属性；没有代理变量时这一步什么也不做。
+      - name: Route JVM through runner proxy
+        run: |
+          P="${https_proxy:-${HTTPS_PROXY:-}}"
+          env | grep -iE 'proxy' || echo "(no proxy vars in env)"
+          if [ -n "$P" ]; then
+            HP=$(printf '%s' "$P" | sed -E 's#^[a-z]+://##; s#/.*$##; s#@.*$##; s#:[0-9]+$##')
+            PP=$(printf '%s' "$P" | sed -E 's#^[a-z]+://##; s#/.*$##' | sed -nE 's#.*:([0-9]+)$#\1#p')
+            PP=${PP:-8080}
+            echo "GRADLE_OPTS=-Dhttps.proxyHost=$HP -Dhttps.proxyPort=$PP -Dhttp.proxyHost=$HP -Dhttp.proxyPort=$PP -Dhttp.nonProxyHosts=localhost|127.0.0.1" >> "$GITHUB_ENV"
+            echo "JVM 走代理 $HP:$PP"
+          fi
+
       # 由 action 备好 Gradle 本体，而不是让 wrapper 自己去下载。
       # runner 上 wrapper 那个 JVM 连 services.gradle.org 会 150ms 内
       # Connection refused（同一台机器上 curl 走 IPv4 拿得到 307，强制
