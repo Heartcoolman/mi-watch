@@ -33,6 +33,20 @@ jobs:
         with:
           gradle-version: '8.14.5'
 
+      - name: Probe repos
+        run: |
+          for U in \
+            "https://dl.google.com/android/maven2/com/android/application/com.android.application.gradle.plugin/8.13.2/com.android.application.gradle.plugin-8.13.2.pom" \
+            "https://repo.maven.apache.org/maven2/org/jetbrains/kotlin/kotlin-stdlib/2.2.20/kotlin-stdlib-2.2.20.pom" \
+            "https://maven.aliyun.com/repository/google/com/android/application/com.android.application.gradle.plugin/8.13.2/com.android.application.gradle.plugin-8.13.2.pom" ; do
+            printf '%s -> ' "${U##*maven2/}"
+            curl -sS -L -o /dev/null -w '%{http_code}\n' --max-time 25 "$U" || echo FAIL
+          done
+          echo "=== gradle debug ==="
+          gradle help --debug --console=plain 2>&1 \
+            | grep -iE "Resource missing|HTTP GET|dl\.google|aliyun|Could not (GET|resolve)|Loading .*from" \
+            | head -30 || true
+
       # :core:test 是归约规则的回归；assembleRelease 走 R8，能一并暴露
       # proguard 规则漏配这类只在压缩后才炸的问题
       - run: gradle :core:test :wear:assembleRelease --console=plain
