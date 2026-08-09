@@ -27,6 +27,18 @@ jobs:
         with:
           gradle-version: '8.14.5'
 
+      # 见 ci.yml：runner 上那处指向 127.0.0.1 的代理配置会让 Gradle 一路
+      # Connection refused，只能在 Gradle 配置层把 proxyHost 压成空
+      - name: Disable proxy for Gradle
+        run: |
+          mkdir -p ~/.gradle
+          cat >> ~/.gradle/gradle.properties <<'EOF'
+          systemProp.http.proxyHost=
+          systemProp.https.proxyHost=
+          systemProp.http.proxyPort=
+          systemProp.https.proxyPort=
+          EOF
+
       # release 构建刻意仍用 debug 签名（理由见 wear/build.gradle.kts）。
       # 但 CI 的 runner 每次都是干净机器，AGP 会现生成一个 debug keystore——
       # 那意味着每次发版的签名都不同，用户装了上一版之后升级会撞

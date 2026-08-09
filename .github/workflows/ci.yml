@@ -46,9 +46,16 @@ jobs:
       # 于是从 wrapper 下载分发包到解析依赖，一律 Connection refused。
       # curl 和裸 JVM 不读 Gradle 的配置，所以在同一台机器上直连是通的——
       # 这个反差正是当初把它误判成网络故障的原因。
+      # runner 上有一处代理配置指向 127.0.0.1 的某个端口，而那个端口没有服务
+      # （ss -tlnp 只有 53 和 22）。Gradle 因此把每个请求都发去那里：
+      #   route: {tls}->http://127.0.0.1:PORT->https://dl.google.com:443
+      # 表现是从 wrapper 下载分发包到解析依赖一律 Connection refused，而同一台
+      # 机器上 curl 和裸 JVM 直连都是通的——这个反差极易误判成网络故障。
+      # 它不在环境变量、JVM 属性、net.properties 或 init.d 里，所以只能在
+      # Gradle 自己的配置层压掉：proxyHost 为空即视为不使用代理。
+      # nonProxyHosts=* 不管用，必须置空 proxyHost。
       - name: Disable proxy for Gradle
         run: |
-          echo "--- listening ports ---"; ss -tlnp 2>/dev/null | head -12 || true
           mkdir -p ~/.gradle
           cat >> ~/.gradle/gradle.properties <<'EOF'
           systemProp.http.proxyHost=
@@ -56,7 +63,6 @@ jobs:
           systemProp.http.proxyPort=
           systemProp.https.proxyPort=
           EOF
-          cat ~/.gradle/gradle.properties
 
       # :core:test 是归约规则的回归；assembleRelease 走 R8，能一并暴露
       # proguard 规则漏配这类只在压缩后才炸的问题
