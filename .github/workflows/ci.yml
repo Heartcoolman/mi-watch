@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# 同一分支上新的推送顶掉还在跑的旧构建
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # JDK 21：core/wear 都产出 17 字节码，但工具链本身要 21（见 core/build.gradle.kts）
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: android-actions/setup-android@v3
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # :core:test 是归约规则的回归；assembleRelease 走 R8，能一并暴露
+      # proguard 规则漏配这类只在压缩后才炸的问题
+      - run: ./gradlew :core:test :wear:assembleRelease --console=plain
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: wear-release-apk
+          path: wear/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+
+      - name: Upload test report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report
+          path: core/build/reports/tests/
