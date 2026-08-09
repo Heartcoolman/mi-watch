@@ -6,6 +6,7 @@
 
 **A third-party Mi Home (Mijia) smart-home client for Wear OS**
 
+[![CI](../../actions/workflows/ci.yml/badge.svg)](../../actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-3DA639)](LICENSE)
 ![Platform](https://img.shields.io/badge/Wear%20OS-6-4285F4?logo=wearos&logoColor=white)
 ![Kotlin](https://img.shields.io/badge/Kotlin-2.2-7F52FF?logo=kotlin&logoColor=white)
@@ -40,7 +41,7 @@ This project provides direct control of Mi Home smart-home devices from a Wear O
 ## Features
 
 - **QR-code authentication.** Login is completed by scanning, with the Mi Home app, a QR code shown on the watch. The scan itself constitutes a second authentication factor, so no captcha or secondary‑verification flow is required.
-- **Device list.** Favorites are pinned to the first screen; the remainder are grouped by room. Sensor readings are rendered directly on the tile.
+- **Device list.** Favorites are pinned to the first screen; the remainder are grouped by room. Sensor readings are rendered directly on the tile. Favorite order is adjustable via "Reorder favorites" at the bottom of the list, and that same order determines the arrangement of the six device-tile slots.
 - **Manual scenes.** Manual scenes are presented as a horizontal row at the top of the list and triggered with a single tap; a dedicated scene Tile is also provided.
 - **Device detail.** A vertical slider adjusts continuous quantities such as brightness and temperature (selectable when several are present); enumerated properties are chosen through an overlay; input‑free actions fire on tap. For **single‑input actions** (e.g. air‑conditioner target temperature, vacuum suction level), a value is chosen in an overlay and dispatched directly.
 - **Watch-face surfaces.** Two Tiles (a 2×3 device‑switch grid and a 2×3 scene grid) and one watch‑face complication (the first favorite's switch state) are provided.
@@ -93,6 +94,14 @@ core/   MiCrypto signing · MiHttp · MiAuth login state machine · MiApi · MiS
 wear/   AppModel state holder · Ui · MiTileService / SceneTileService · MiComplicationService · SpecCache
 ```
 
+## Display adaptation
+
+Interface dimensions are derived at runtime from the screen width, with the developer's 480×480 (226dp) round display as the reference. Type sizes are excluded from scaling, since legibility has an absolute floor while the span of watch screen widths is only about ±8%. A few dimensions adjacent to fixed-size type carry a floor or ceiling of their own (tile height, vertical slider height) so that content cannot burst them on smaller screens.
+
+Square displays are not the round layout inscribed in a box; they get a layout of their own. The tile grid and control area widen from 74% to 88% of screen width; full-width rows, the detail-screen title, and the bottom readout line switch to a single uniform margin ratio (their round-screen counterparts exist to keep content inside the chord — the title and readout line sit closest to the top and bottom arcs and are therefore inset the deepest, at 34dp and 39dp); and lists drop the edge scaling and auto-centering that exist for round-screen tapering, starting from the top instead.
+
+Every screen was checked on a 384×384 (192dp) emulator along both the round and square code paths. Note that Wear OS system images report `isScreenRound=true` regardless of AVD configuration — reaching the square path requires a phone image with an overridden resolution.
+
 ## Build
 
 Requirements: JDK 21 and an Android SDK (compileSdk 36).
@@ -103,9 +112,11 @@ adb install -r wear/build/outputs/apk/release/wear-release.apk
 adb shell cmd package compile -m speed -f dev.liji.mihome   # optional: complete AOT compilation immediately
 ```
 
+Prebuilt APKs are also available from [Releases](../../releases), which avoids setting up a local toolchain.
+
 The **release** build is recommended for daily use. The `debuggable` flag alone disables a substantial portion of ART optimization, causing dropped frames during fast scrolling (confirmed by on‑device A/B comparison). A baseline profile is bundled, so the system will eventually AOT‑compile the hot paths on its own; the `compile` command above merely makes this effect immediate. Use `assembleDebug` when `run-as` log access is required.
 
-> This repository's `settings.gradle.kts` uses Aliyun mirrors, as `dl.google.com` is not directly reachable from mainland China. Users elsewhere may place `google()` first in the source list.
+> This repository's `settings.gradle.kts` defaults to Aliyun mirrors, as `dl.google.com` is not directly reachable from mainland China; when a `CI` environment variable is present it switches to the official sources. Users elsewhere can take the same path with `CI=true ./gradlew …`.
 
 ## Command-line tool
 
@@ -151,6 +162,7 @@ The application contains no special handling tied to the author's environment:
 - **All homes.** A single account bound to multiple residences is common; reading only the first home would render the remaining devices entirely invisible.
 - **Favorite initialization.** The first three switchable devices are favorited on first launch; the user's subsequent choices in the detail page take precedence thereafter.
 - **Session expiry.** On complete session expiry, the application returns directly to the login screen rather than remaining on an unrecoverable error.
+- **Refresh on return to foreground.** While the process is alive, raising the wrist back into the app triggers only `onResume`, leaving whatever state was on screen at departure — during which the phone app or an automation may well have changed the devices. A refresh is therefore issued from `onResume`, throttled to 30 seconds so that rapid switching does not repeat the request.
 - **Explicit offline state.** On a failed refresh, "Offline · last known state" is shown atop the list; a tile unsynchronized for more than 30 minutes receives a faint marker. Stale state never masquerades as live state.
 - **Batched reads.** `prop/get` carries at most 80 properties per batch, so homes with many devices do not exceed the request‑body limit.
 

@@ -6,6 +6,7 @@
 
 **Wear OS 平台的第三方米家（Mijia）智能家居客户端**
 
+[![CI](../../actions/workflows/ci.yml/badge.svg)](../../actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-3DA639)](LICENSE)
 ![Platform](https://img.shields.io/badge/Wear%20OS-6-4285F4?logo=wearos&logoColor=white)
 ![Kotlin](https://img.shields.io/badge/Kotlin-2.2-7F52FF?logo=kotlin&logoColor=white)
@@ -40,7 +41,7 @@
 ## 功能
 
 - **扫码登录。** 使用米家 App 扫描手表显示的二维码完成鉴权。扫码行为本身构成第二验证因子，故无需处理图形验证码或二次验证流程。
-- **设备列表。** 收藏设备固定于首屏，其余按房间分组；传感器读数直接呈现于磁贴。
+- **设备列表。** 收藏设备固定于首屏，其余按房间分组；传感器读数直接呈现于磁贴。收藏顺序可于列表底部「收藏排序」中调整，该顺序同时决定设备 Tile 六格的排列。
 - **手动场景。** 列表顶部以横向条目展示手动场景，单次点击即触发；另提供独立的场景 Tile。
 - **设备详情。** 竖向滑块调节亮度、温度等连续量（存在多个连续量时可切换）；枚举属性经浮层选择；无入参动作单击即发。对空调设定温度、扫地机吸力等**单入参动作**，浮层选择档位后直接下发。
 - **表盘组件。** 提供两个 Tile（2×3 设备开关网格、2×3 场景网格）与一个表盘 Complication（首个收藏设备的开关状态）。
@@ -93,6 +94,14 @@ core/   MiCrypto 签名 · MiHttp · MiAuth 登录状态机 · MiApi · MiSpec �
 wear/   AppModel 状态持有 · Ui 界面 · MiTileService / SceneTileService · MiComplicationService · SpecCache
 ```
 
+## 屏幕适配
+
+界面尺寸在运行时依屏幕宽度推导，基准为开发机的 480×480（226dp）圆屏；字号不参与缩放，因其可读性存在绝对下限，而各型号表盘的屏幅差异仅约 ±8%。若干与固定字号相邻的尺寸另设下限或上限（磁贴高度、竖滑块高度），以免在小屏上被内容顶破。
+
+方形屏并非将圆形版面内切于方框，而是另有一套版面：磁贴网格与控件区的横向占比自 74% 放宽至 88%；全宽行、详情页标题与底部读数行的左右缩进改用统一的版心比例（圆屏的对应值是为使内容落在弦内而设，其中标题与读数行因最贴近上下弧而缩进最深，达 34dp 与 39dp）；列表关闭为圆形收口而设的边缘缩放与自动居中，改为自顶部起排。
+
+各界面均于 384×384（192dp）模拟器上就圆形与方形两条代码路径分别核对。需注意 Wear OS 系统镜像无论 AVD 如何配置均报告 `isScreenRound=true`，方形路径须以手机镜像强制改写分辨率方能执行到。
+
 ## 构建
 
 环境要求：JDK 21 与 Android SDK（compileSdk 36）。
@@ -103,9 +112,11 @@ adb install -r wear/build/outputs/apk/release/wear-release.apk
 adb shell cmd package compile -m speed -f dev.liji.mihome   # 可选：立即完成 AOT 编译
 ```
 
+亦可自 [Releases](../../releases) 下载已构建的 APK，免去本地环境配置。
+
 建议日常使用安装 **release** 构建。`debuggable` 标志会禁用相当一部分 ART 优化，进而导致快速滚动时掉帧（已在设备上经 A/B 对比确认）。构建已内置 baseline profile，系统最终会自行对热点路径进行 AOT 编译；上述 `compile` 命令仅用于使其即时生效。需经 `run-as` 读取日志时，改用 `assembleDebug`。
 
-> 本仓库 `settings.gradle.kts` 采用阿里云镜像源，因 `dl.google.com` 在中国大陆不可直连。境外用户可将 `google()` 置于源列表首位。
+> 本仓库 `settings.gradle.kts` 默认采用阿里云镜像源，因 `dl.google.com` 在中国大陆不可直连；检测到 `CI` 环境变量时自动改用官方源。境外用户可以 `CI=true ./gradlew …` 走同一路径。
 
 ## 命令行工具
 
@@ -153,6 +164,7 @@ adb shell cmd package compile -m speed -f dev.liji.mihome   # 可选：立即完
 - **全部家庭。** 单账号绑定多处住所属常见情形；仅读取首个家庭将使其余设备完全不可见。
 - **收藏初始化。** 首次启动自动收藏前 3 个可开关设备，此后以用户在详情页的选择为准。
 - **会话失效处理。** 会话彻底失效时直接返回登录界面，而非停留于无法自解的错误提示。
+- **回前台即刷新。** 进程未被回收时，抬腕返回应用仅触发 `onResume`，界面上仍是离开时的状态，而其间设备可能已被手机端或自动化改变。故于 `onResume` 触发刷新，并以 30 秒节流避免频繁切换时的重复请求。
 - **离线状态标注。** 刷新失败时于列表顶部提示「离线 · 显示上次状态」；Tile 超过 30 分钟未同步时于对应格加淡色标记。过期状态不冒充实时状态。
 - **属性分批读取。** `prop/get` 每批至多 80 个属性，避免设备较多的家庭超出请求体上限。
 
