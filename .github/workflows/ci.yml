@@ -14,6 +14,14 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      # runner 上有一处 JVM 级的代理配置指向 127.0.0.1 的某个端口，而那个端口
+      # 没人监听：Gradle 的连接路由是
+      #   {tls}->http://127.0.0.1:PORT->https://dl.google.com:443
+      # 于是从 wrapper 下载分发包到解析依赖，一律 Connection refused。
+      # curl 和裸 JVM 不读它，同机直连反而通——这个反差正是当初把它
+      # 误判成网络故障的原因。nonProxyHosts=* 让所有主机都绕开代理。
+      GRADLE_OPTS: "-Dhttp.nonProxyHosts=* -Dhttps.nonProxyHosts=*"
     steps:
       - uses: actions/checkout@v4
 
@@ -38,15 +46,12 @@ jobs:
       # 于是从 wrapper 下载分发包到解析依赖，一律 Connection refused。
       # curl 和裸 JVM 不读 Gradle 的配置，所以在同一台机器上直连是通的——
       # 这个反差正是当初把它误判成网络故障的原因。
-      - name: Strip proxy settings from Gradle config
+      - name: Locate proxy source
         run: |
-          grep -rlEi 'proxy' ~/.gradle/ 2>/dev/null || echo "(no proxy config found)"
-          F=~/.gradle/gradle.properties
-          if [ -f "$F" ]; then
-            echo "--- before ---"; cat "$F"
-            sed -i -E '/[Pp]roxy/d' "$F"
-            echo "--- after ---"; cat "$F"
-          fi
+          echo "--- JVM properties ---"; java -XshowSettings:properties -version 2>&1 | grep -i proxy || echo none
+          echo "--- env ---"; env | grep -iE 'proxy|JAVA_TOOL|_JAVA' || echo none
+          echo "--- net.properties ---"; grep -vE '^#|^$' "$JAVA_HOME/conf/net.properties" | grep -i proxy | head -10 || echo none
+          echo "--- init.d ---"; ls -la ~/.gradle/init.d/ 2>/dev/null && head -40 ~/.gradle/init.d/* 2>/dev/null || echo none
 
       # :core:test 是归约规则的回归；assembleRelease 走 R8，能一并暴露
       # proguard 规则漏配这类只在压缩后才炸的问题
