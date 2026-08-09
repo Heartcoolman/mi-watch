@@ -46,12 +46,17 @@ jobs:
       # 于是从 wrapper 下载分发包到解析依赖，一律 Connection refused。
       # curl 和裸 JVM 不读 Gradle 的配置，所以在同一台机器上直连是通的——
       # 这个反差正是当初把它误判成网络故障的原因。
-      - name: Locate proxy source
+      - name: Disable proxy for Gradle
         run: |
-          echo "--- JVM properties ---"; java -XshowSettings:properties -version 2>&1 | grep -i proxy || echo none
-          echo "--- env ---"; env | grep -iE 'proxy|JAVA_TOOL|_JAVA' || echo none
-          echo "--- net.properties ---"; grep -vE '^#|^$' "$JAVA_HOME/conf/net.properties" | grep -i proxy | head -10 || echo none
-          echo "--- init.d ---"; ls -la ~/.gradle/init.d/ 2>/dev/null && head -40 ~/.gradle/init.d/* 2>/dev/null || echo none
+          echo "--- listening ports ---"; ss -tlnp 2>/dev/null | head -12 || true
+          mkdir -p ~/.gradle
+          cat >> ~/.gradle/gradle.properties <<'EOF'
+          systemProp.http.proxyHost=
+          systemProp.https.proxyHost=
+          systemProp.http.proxyPort=
+          systemProp.https.proxyPort=
+          EOF
+          cat ~/.gradle/gradle.properties
 
       # :core:test 是归约规则的回归；assembleRelease 走 R8，能一并暴露
       # proguard 规则漏配这类只在压缩后才炸的问题
