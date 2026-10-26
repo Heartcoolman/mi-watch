@@ -5,8 +5,10 @@ import com.google.zxing.EncodeHintType
 import com.google.zxing.common.BitMatrix
 import com.google.zxing.qrcode.QRCodeWriter
 import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -292,12 +294,17 @@ private fun probe() {
 
 private fun homes() {
     val r = api.getHomes()
-    val list = r["result"]?.jsonObject?.get("homelist")?.jsonArray ?: return println("无家庭")
+    val result = r["result"]?.jsonObject ?: return println("无家庭")
+    val list = listOf("homelist", "share_home_list")
+        .flatMap { key -> (result[key] as? JsonArray) ?: emptyList() }
+    if (list.isEmpty()) return println("无家庭")
     list.forEach { h ->
         val o = h.jsonObject
         val id = o["id"]?.jsonPrimitive?.content
         val uid = o["uid"]?.jsonPrimitive?.longOrNull
-        println("家庭 id=$id uid=$uid name=${o["name"]?.jsonPrimitive?.content} 设备数=${o["dids"]?.jsonArray?.size}")
+        val shared = o["shareflag"]?.jsonPrimitive?.intOrNull == 1
+        val tag = if (shared) "（共享）" else ""
+        println("家庭 id=$id uid=$uid name=${o["name"]?.jsonPrimitive?.content}$tag 设备数=${o["dids"]?.jsonArray?.size}")
         o["roomlist"]?.jsonArray?.forEach { rm ->
             val ro = rm.jsonObject
             println("   房间 ${ro["name"]?.jsonPrimitive?.content}  dids=${ro["dids"]?.jsonArray?.size}")

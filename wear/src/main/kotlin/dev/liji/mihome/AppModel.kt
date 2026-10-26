@@ -486,7 +486,7 @@ class AppModel(private val app: Context) {
                     model = info.model,
                     room = rooms[info.did],
                     cnt = info.cnt,
-                    controls = controlsByType[info.specType].orEmpty(),
+                    controls = info.specType?.let { controlsByType[it] }.orEmpty(),
                 )
             }
             // 有常用控件的排前面：连电量都读不到的设备（体脂秤）沉底

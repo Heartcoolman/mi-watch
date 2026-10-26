@@ -183,29 +183,34 @@ class MiApi(private val store: Store, private val auth: MiAuth, var verbose: Boo
 
     /** 类型化封装，:wear 只用这几个，不必接触 JSON。 */
     /**
-     * 全部家庭，连房间表一起返回。
+     * 全部家庭（含共享），连房间表一起返回。
      *
      * 必须是「全部」而不是「第一个」：一个账号有多套房产是常态（本机测试账号就有
      * 我的家 / 奶奶家 / 姥姥家三个），只读第一个会让另外两处的设备**在 App 里完全不存在**。
+     * 共享家庭在 `share_home_list` 里，结构与 `homelist` 完全一致，要合并进来。
      * 房间表顺路一起解析，省掉一次 gethome 往返。
      */
-    fun homes(): List<HomeInfo> =
-        (getHomes()["result"]?.jsonObject?.get("homelist") as? JsonArray).orEmpty().map { e ->
-            val o = e.jsonObject
-            val rooms = HashMap<String, String>()
-            (o["roomlist"] as? JsonArray).orEmpty().forEach { r ->
-                val name = r.jsonObject["name"]?.jsonPrimitive?.contentOrNull.orEmpty()
-                (r.jsonObject["dids"] as? JsonArray).orEmpty().forEach { d ->
-                    d.jsonPrimitive.contentOrNull?.let { rooms[it] = name }
+    fun homes(): List<HomeInfo> {
+        val result = getHomes()["result"]?.jsonObject ?: return emptyList()
+        return listOf("homelist", "share_home_list")
+            .flatMap { key -> (result[key] as? JsonArray).orEmpty() }
+            .map { e ->
+                val o = e.jsonObject
+                val rooms = HashMap<String, String>()
+                (o["roomlist"] as? JsonArray).orEmpty().forEach { r ->
+                    val name = r.jsonObject["name"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                    (r.jsonObject["dids"] as? JsonArray).orEmpty().forEach { d ->
+                        d.jsonPrimitive.contentOrNull?.let { rooms[it] = name }
+                    }
                 }
+                HomeInfo(
+                    id = o["id"]!!.jsonPrimitive.content.toLong(),
+                    uid = o["uid"]!!.jsonPrimitive.longOrNull ?: error("家庭缺 uid"),
+                    name = o["name"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+                    rooms = rooms,
+                )
             }
-            HomeInfo(
-                id = o["id"]!!.jsonPrimitive.content.toLong(),
-                uid = o["uid"]!!.jsonPrimitive.longOrNull ?: error("家庭缺 uid"),
-                name = o["name"]?.jsonPrimitive?.contentOrNull.orEmpty(),
-                rooms = rooms,
-            )
-        }
+    }
 
     /**
      * 探测账号归属的区域，返回带家庭的那个。登录后只跑一次，结果落盘。
